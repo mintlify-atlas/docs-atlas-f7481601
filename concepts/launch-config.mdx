@@ -1,0 +1,123 @@
+---
+title: "Configuring CUDA Kernel Launch Parameters"
+sidebarTitle: "Launch Config"
+description: "LaunchConfig controls the CUDA kernel grid and block dimensions. Use for_num_elems() for 1D data or set grid_dim and block_dim manually for 2D and 3D layouts."
+---
+
+Every CUDA kernel launch requires a **grid configuration** that tells the GPU how many thread blocks to create and how many threads to place in each block. cudaz captures this through the `LaunchConfig` struct, which is passed as the second argument to `function.run(params, cfg)`. Getting the configuration right is important: too few threads leave the GPU underutilised, while an incorrectly sized grid causes out-of-bounds memory accesses or silently drops elements at the end of an array.
+
+## `LaunchConfig` Fields
+
+The `LaunchConfig` struct has three fields, each of which maps directly to a parameter of `cuLaunchKernel`:
+
+| Field | Type | Description |
+|---|---|---|
+| `grid_dim` | `struct { u32, u32, u32 }` | Number of thread blocks in the x, y, and z dimensions of the grid |
+| `block_dim` | `struct { u32, u32, u32 }` | Number of threads per block in the x, y, and z dimensions |
+| `shared_mem_bytes` | `u32` | Bytes of dynamic shared memory to allocate per block |
+
+For most 1D workloads you only need to set `grid_dim[0]` and `block_dim[0]`; the remaining dimensions default to 1. For 2D workloads such as matrix operations, you set both x and y dimensions. The z dimension is typically left at 1 unless you are working with 3D data.
+
+## Manual Configuration
+
+You can construct a `LaunchConfig` literal directly when you know the exact launch geometry:
+
+```zig
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ 4, 1, 1 },
+    .block_dim = .{ 256, 1, 1 },
+    .shared_mem_bytes = 0,
+};
+```
+
+This launches `4 × 256 = 1024` threads arranged as 4 blocks of 256 threads each. The total thread count must be at least as large as the number of elements you want to process. Any threads beyond the last valid element must be guarded by a bounds check inside the kernel:
+
+```cuda
+extern "C" __global__ void my_kernel(float* data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) data[i] *= 2.0f;
+}
+```
+
+## Helper: `LaunchConfig.for_num_elems(n)`
+
+For standard 1D element-wise operations, `for_num_elems` computes the grid and block dimensions automatically from the number of elements:
+
+```zig
+const cfg = Cuda.LaunchConfig.for_num_elems(@intCast(data.len));
+```
+
+Internally it uses **1024 threads per block** and calculates the number of blocks with integer ceiling division:
+
+```
+num_blocks = (n + 1024 - 1) / 1024
+```
+
+So for 2048 elements you get 2 blocks of 1024 threads, for 2049 elements you get 3 blocks of 1024 threads (with the last block having 1023 idle threads, protected by the bounds check in the kernel). The returned config always has `shared_mem_bytes = 0`.
+
+```zig
+// 4096 elements → grid_dim = {4, 1, 1}, block_dim = {1024, 1, 1}
+const cfg = Cuda.LaunchConfig.for_num_elems(4096);
+
+// 100 elements → grid_dim = {1, 1, 1}, block_dim = {1024, 1, 1}
+const cfg_small = Cuda.LaunchConfig.for_num_elems(100);
+```
+
+## 2D Configuration (Matrix Operations)
+
+For 2D kernels such as matrix multiplication, set both the x and y dimensions of `block_dim` and compute `grid_dim` to cover the full matrix:
+
+```zig
+// 4×4 matrix tiled with 2×2 thread blocks → 2×2 grid of blocks
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ 2, 2, 1 },
+    .block_dim = .{ 2, 2, 1 },
+    .shared_mem_bytes = 0,
+};
+```
+
+Inside the kernel, recover the 2D index using both x and y coordinates:
+
+```cuda
+extern "C" __global__ void matmul(float* A, float* B, float* C, int N) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < N && col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < N; k++) {
+            sum += A[row * N + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+```
+
+## Shared Memory
+
+Set `shared_mem_bytes` to allocate dynamic shared memory per block. Shared memory is accessible to all threads in the same block and is much faster than global device memory:
+
+```zig
+const TILE: u32 = 16;
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ grid_x, grid_y, 1 },
+    .block_dim = .{ TILE, TILE, 1 },
+    .shared_mem_bytes = TILE * TILE * @sizeOf(f32),
+};
+```
+
+Declare the shared memory buffer in your CUDA kernel with `extern __shared__`:
+
+```cuda
+extern "C" __global__ void tiled_kernel(float* data, int n) {
+    extern __shared__ float tile[];
+    // ... load into tile, __syncthreads(), compute ...
+}
+```
+
+<Tip>
+  For most 1D operations, prefer `LaunchConfig.for_num_elems` over manual configuration. It eliminates off-by-one errors in block-count calculation and ensures every element is covered. Only reach for a manual `LaunchConfig` when you need 2D/3D indexing, non-default block sizes, or dynamic shared memory.
+</Tip>
+
+<Note>
+  CUDA hardware limits the total number of threads per block to **1024** on most GPUs (the exact limit is reported by `cuDeviceGetAttribute` with `CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK`). `LaunchConfig.for_num_elems` uses exactly 1024 threads per block, which is the safe maximum. If you set `block_dim` manually to a product exceeding 1024 (e.g., `{32, 32, 2}` = 2048), the kernel launch will fail at runtime.
+</Note>

@@ -1,0 +1,96 @@
+---
+title: "LaunchConfig API Reference — CUDA Kernel Grid Configuration"
+sidebarTitle: "LaunchConfig"
+description: "Reference for cudaz's LaunchConfig struct: grid_dim, block_dim, shared_mem_bytes fields and the for_num_elems helper."
+---
+
+Every CUDA kernel launch requires a grid configuration that tells the driver how many thread blocks to create and how many threads to put in each block. cudaz captures this in the `LaunchConfig` struct, which maps directly to the grid/block arguments of `cuLaunchKernel`. You can construct a `LaunchConfig` manually for full control over 1D, 2D, or 3D grids, or use the `for_num_elems` helper to automatically compute a 1D grid that covers `n` elements.
+
+## Import
+
+```zig
+const CuLaunchConfig = @import("cudaz").LaunchConfig;
+```
+
+---
+
+## Struct Fields
+
+<ParamField path="grid_dim" type="struct { u32, u32, u32 }">
+  Number of thread blocks in the X, Y, and Z dimensions of the grid. The total number of thread blocks launched equals `grid_dim[0] * grid_dim[1] * grid_dim[2]`. For 1D workloads, set Y and Z to `1`.
+</ParamField>
+
+<ParamField path="block_dim" type="struct { u32, u32, u32 }">
+  Number of threads per block in the X, Y, and Z dimensions. The total threads per block equals `block_dim[0] * block_dim[1] * block_dim[2]`. Must not exceed the device's maximum threads-per-block limit (typically 1024).
+</ParamField>
+
+<ParamField path="shared_mem_bytes" type="u32">
+  Number of bytes of dynamic shared memory to allocate per block for this launch. Pass `0` if the kernel does not use dynamic shared memory.
+</ParamField>
+
+---
+
+## Functions
+
+### `for_num_elems`
+
+```zig
+pub fn for_num_elems(n: u32) LaunchConfig
+```
+
+Computes a 1D launch configuration that covers exactly `n` elements using blocks of 1024 threads. The grid size is rounded up so that every element gets a thread, even if `n` is not a multiple of 1024.
+
+<ParamField path="n" type="u32" required>
+  Total number of elements (threads) to cover. Must be greater than zero.
+</ParamField>
+
+**Returns:** `LaunchConfig`
+
+**Formula:**
+
+```
+num_blocks = (n + 1024 - 1) / 1024
+grid_dim   = { num_blocks, 1, 1 }
+block_dim  = { 1024, 1, 1 }
+shared_mem_bytes = 0
+```
+
+**Example:** For `n = 10000`, `num_blocks = (10000 + 1023) / 1024 = 10`, yielding 10 × 1024 = 10 240 total threads — enough to cover all 10 000 elements (each kernel should guard with `if (i < n)`).
+
+<Note>
+Kernels launched with `for_num_elems` will have more threads than elements when `n` is not a multiple of 1024. Always add a bounds check inside your kernel: `if (i < n) { ... }`.
+</Note>
+
+---
+
+## Examples
+
+```zig
+// Manual 1D config — 4 blocks of 256 threads (1024 total threads)
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ 4, 1, 1 },
+    .block_dim = .{ 256, 1, 1 },
+    .shared_mem_bytes = 0,
+};
+
+// Auto 1D config for 10000 elements — computes 10 blocks of 1024 threads
+const cfg = Cuda.LaunchConfig.for_num_elems(10000);
+
+// 2D config for a 16×16 tile — 1 block with 256 threads arranged in a 16×16 grid
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ 1, 1, 1 },
+    .block_dim = .{ 16, 16, 1 },
+    .shared_mem_bytes = 0,
+};
+
+// Config with dynamic shared memory — 32 blocks of 128 threads, 4 KiB shared mem each
+const cfg = Cuda.LaunchConfig{
+    .grid_dim = .{ 32, 1, 1 },
+    .block_dim = .{ 128, 1, 1 },
+    .shared_mem_bytes = 4096,
+};
+```
+
+<Tip>
+For multi-dimensional workloads like image processing or matrix operations, set both X and Y dimensions of `block_dim` to match your tile size (e.g., `16 × 16`) and scale `grid_dim` accordingly: `grid_dim = { (width + 15) / 16, (height + 15) / 16, 1 }`.
+</Tip>

@@ -1,0 +1,200 @@
+---
+title: "Compile API Reference — Runtime CUDA Kernel Compilation"
+sidebarTitle: "Compile"
+description: "Reference for the cudaz Compile module: cudaText, cudaFile, and cudaProgram for compiling CUDA C source to PTX via NVRTC."
+---
+
+The `Compile` module wraps NVIDIA's NVRTC (NVIDIA Runtime Compilation) library to let you compile CUDA C source code into PTX at runtime, entirely from Zig. You can supply kernel source as an inline string or point to a `.cu` file on disk. The resulting PTX string can be loaded directly onto a device with `Device.loadPtxText`. Every compilation step is controlled through the `Options` struct, which maps to NVRTC command-line flags.
+
+## Import
+
+```zig
+const CuCompile = @import("cudaz").Compile;
+```
+
+---
+
+## Functions
+
+### `cudaText`
+
+```zig
+pub fn cudaText(
+    cuda_text: []const u8,
+    options: ?Options,
+    allocator: std.mem.Allocator,
+) CompileError![:0]const u8
+```
+
+Compiles an inline CUDA C source string to PTX. Internally creates an `nvrtcProgram`, compiles it with the provided options, and extracts the PTX output. The returned PTX is a sentinel-terminated (`[:0]`) string allocated with `allocator`. The caller must free it.
+
+<ParamField path="cuda_text" type="[]const u8" required>
+  The full CUDA C source code to compile. Does not need to be null-terminated.
+</ParamField>
+<ParamField path="options" type="?Options">
+  Compilation options. Pass `null` to use all NVRTC defaults.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator used for the returned PTX string and internal temporaries.
+</ParamField>
+
+**Returns:** `CompileError![:0]const u8` — null-terminated PTX string owned by the caller
+
+```zig
+const kernel_src =
+    \\extern "C" __global__ void add(float* a, float* b, float* c, int n) {
+    \\    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    \\    if (i < n) c[i] = a[i] + b[i];
+    \\}
+;
+
+const ptx = try CuCompile.cudaText(kernel_src, null, allocator);
+defer allocator.free(ptx);
+
+const module = try Cuda.Device.loadPtxText(ptx);
+const func = try module.getFunc("add");
+```
+
+<Note>
+When compilation fails (e.g., a syntax error in the kernel), cudaz prints the NVRTC compiler log to stderr before returning `error.NVRTC_ERROR_COMPILATION`. Check the printed log for line numbers and error messages.
+</Note>
+
+---
+
+### `cudaFile`
+
+```zig
+pub fn cudaFile(
+    cuda_path: std.Io.File,
+    io: std.Io,
+    options: ?Options,
+    allocator: std.mem.Allocator,
+) ![:0]const u8
+```
+
+Reads a `.cu` file from disk and compiles it to PTX. Allocates up to 1 MiB to buffer the file contents, then delegates to `cudaText`. The returned PTX string is allocated with `allocator` and must be freed by the caller.
+
+<ParamField path="cuda_path" type="std.Io.File" required>
+  An open file handle pointing to the CUDA source file to compile.
+</ParamField>
+<ParamField path="io" type="std.Io" required>
+  The I/O interface used to read the file.
+</ParamField>
+<ParamField path="options" type="?Options">
+  Compilation options. Pass `null` to use NVRTC defaults.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator for the returned PTX string and internal buffers.
+</ParamField>
+
+**Returns:** `![:0]const u8` — null-terminated PTX string owned by the caller
+
+<Warning>
+The internal read buffer is fixed at 1 MiB. CUDA source files larger than 1 MiB will be truncated. For large kernel files, prefer reading the file manually and passing the contents to `cudaText`.
+</Warning>
+
+---
+
+### `cudaProgram`
+
+```zig
+pub fn cudaProgram(
+    prg: nvrtc.nvrtcProgram,
+    options: ?Options,
+    allocator: std.mem.Allocator,
+) CompileError!void
+```
+
+Compiles an already-created `nvrtcProgram`. This lower-level function is useful when you need to manage the NVRTC program lifecycle yourself (for example, to attach headers or set program names). `cudaText` calls this internally.
+
+<ParamField path="prg" type="nvrtc.nvrtcProgram" required>
+  An `nvrtcProgram` handle created via `nvrtcCreateProgram`.
+</ParamField>
+<ParamField path="options" type="?Options">
+  Compilation options. Pass `null` for defaults.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator for building the options array and fetching the compiler log on error.
+</ParamField>
+
+**Returns:** `CompileError!void`
+
+---
+
+### `getPtx`
+
+```zig
+pub fn getPtx(
+    prg: nvrtc.nvrtcProgram,
+    allocator: std.mem.Allocator,
+) CompileError![:0]const u8
+```
+
+Extracts the compiled PTX text from an `nvrtcProgram` that has already been compiled with `cudaProgram`. Queries the PTX size via `nvrtcGetPTXSize`, allocates a buffer, and fills it with `nvrtcGetPTX`. The returned string is owned by the caller.
+
+<ParamField path="prg" type="nvrtc.nvrtcProgram" required>
+  A successfully compiled `nvrtcProgram`.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator for the returned PTX buffer.
+</ParamField>
+
+**Returns:** `CompileError![:0]const u8`
+
+---
+
+## `Options`
+
+The `Options` struct maps Zig fields to NVRTC compiler flags. All fields are optional; unset fields are omitted from the compiler invocation.
+
+```zig
+const options = CuCompile.Options{
+    .use_fast_math = true,
+    .arch = &[_][]const u8{"compute_86"},
+};
+```
+
+<ParamField path="ftz" type="?bool">
+  Flush denormal floating-point values to zero. Maps to `--ftz=true` / `--ftz=false`.
+</ParamField>
+<ParamField path="prec_sqrt" type="?bool">
+  Use IEEE-compliant square root. Maps to `--prec-sqrt=true` / `--prec-sqrt=false`. Disable for faster but less precise `sqrtf`.
+</ParamField>
+<ParamField path="prec_div" type="?bool">
+  Use IEEE-compliant division. Maps to `--prec-div=true` / `--prec-div=false`. Disable for faster reciprocal approximation.
+</ParamField>
+<ParamField path="use_fast_math" type="?bool">
+  Enable fused multiply-add (FMA) instructions. Maps to `--fmad=true` / `--fmad=false`. Improves throughput at the cost of strict IEEE rounding.
+</ParamField>
+<ParamField path="maxrregcount" type="?usize">
+  Maximum number of registers each compiled thread may use. Maps to `--maxrregcount=N`. Lower values increase occupancy but may spill to local memory.
+</ParamField>
+<ParamField path="include_paths" type="[][]const u8">
+  Additional header search directories. Each entry maps to `--include-path=<dir>`. Defaults to an empty slice.
+</ParamField>
+<ParamField path="arch" type="[][]const u8">
+  Target GPU compute architectures. Each entry maps to `-arch=<arch>` (e.g., `"compute_86"` for Ampere). Defaults to an empty slice (NVRTC selects a default).
+</ParamField>
+<ParamField path="macro" type="[][]const u8">
+  Preprocessor macro definitions. Each entry maps to `--define-macro=<name>`. Defaults to an empty slice.
+</ParamField>
+
+---
+
+## `CompileError`
+
+```zig
+const CompileError = std.mem.Allocator.Error || NvrtcError.Error || error{StreamTooLong};
+```
+
+The error union returned by compilation functions combines three sources:
+
+| Error set | When it occurs |
+|---|---|
+| `std.mem.Allocator.Error` | Allocation failure while building option arrays or the PTX buffer |
+| `NvrtcError.Error` | Any NVRTC API call failure, including `NVRTC_ERROR_COMPILATION` |
+| `error{StreamTooLong}` | File read overflow when using `cudaFile` |
+
+<Tip>
+The most common compile-time error is `error.NVRTC_ERROR_COMPILATION`. When this occurs, cudaz automatically fetches and prints the NVRTC program log to stderr. Read that output to diagnose syntax errors or missing includes in your CUDA kernel source.
+</Tip>

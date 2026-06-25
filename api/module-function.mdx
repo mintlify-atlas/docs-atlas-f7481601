@@ -1,0 +1,126 @@
+---
+title: "Module and Function API Reference — cudaz PTX Execution"
+sidebarTitle: "Module & Function"
+description: "Reference for the cudaz Module and Function types: loading PTX modules, retrieving kernel functions, and launching kernels with run()."
+---
+
+After compiling CUDA C source to PTX, you load it onto a device as a `Module` and then retrieve individual kernel entry points as `Function` handles. Calling `func.run(...)` dispatches the kernel on the GPU with the grid and block dimensions you specify in a `LaunchConfig`. The `Module` and `Function` types are thin, zero-overhead wrappers around the CUDA driver API's `CUmodule` and `CUfunction` handles.
+
+---
+
+## `Module`
+
+A `Module` represents a loaded PTX image on a CUDA device. You obtain a `Module` by calling `Device.loadPtxText` or `Device.loadPtx`.
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `cu_module` | `cuda.CUmodule` | Underlying CUDA driver module handle |
+
+### `getFunc`
+
+```zig
+pub fn getFunc(self: Module, name: []const u8) CudaError.Error!Function
+```
+
+Looks up a kernel function by its C symbol name within the module and returns a `Function` handle. Uses `cuModuleGetFunction` internally.
+
+<ParamField path="self" type="Module" required>
+  The loaded PTX module to query.
+</ParamField>
+<ParamField path="name" type="[]const u8" required>
+  The C-linkage name of the kernel function (without name mangling). Must match the symbol as it appears in the compiled PTX.
+</ParamField>
+
+**Returns:** `CudaError.Error!Function`
+
+<Note>
+The kernel must be declared with `extern "C"` linkage in your CUDA source to prevent C++ name mangling. The typical declaration is `extern "C" __global__ void my_kernel(...)`. The `name` string you pass to `getFunc` must match this symbol exactly.
+</Note>
+
+### Example
+
+```zig
+const ptx = try Cuda.Compile.cudaText(kernel_source, null, allocator);
+defer allocator.free(ptx);
+
+const module = try Cuda.Device.loadPtxText(ptx);
+const func = try module.getFunc("my_kernel");
+```
+
+---
+
+## `Function`
+
+A `Function` is a handle to a single `__global__` kernel entry point within a loaded `Module`. You use it to launch the kernel on the GPU.
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `cu_func` | `cuda.CUfunction` | Underlying CUDA driver function handle |
+
+### `run`
+
+```zig
+pub fn run(self: Function, params: anytype, cfg: LaunchConfig) CudaError.Error!void
+```
+
+Launches the kernel using `cuLaunchKernel`. Grid and block dimensions are taken from `cfg`. The kernel arguments are passed via `params`, which must be a struct literal where each field is a pointer to a kernel argument value.
+
+<ParamField path="self" type="Function" required>
+  The kernel function handle to launch.
+</ParamField>
+<ParamField path="params" type="anytype" required>
+  A struct literal whose fields are pointers to the kernel arguments, in the same order as the kernel's C parameter list. Must be a struct — arrays are rejected at compile time.
+</ParamField>
+<ParamField path="cfg" type="LaunchConfig" required>
+  Grid and block dimensions and shared memory size for this launch. See [LaunchConfig](/api/launch-config).
+</ParamField>
+
+**Returns:** `CudaError.Error!void`
+
+<Warning>
+`params` **must** be a struct literal at the call site. Passing an array or any non-struct type causes a compile error: `"Invalid params type, must be a struct"`. Additionally, each field must be a pointer (`&value`) — passing values directly will produce incorrect results or a runtime crash.
+</Warning>
+
+### Example
+
+```zig
+const kernel_source =
+    \\extern "C" __global__ void scale(float* data, float factor, int n) {
+    \\    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    \\    if (i < n) data[i] *= factor;
+    \\}
+;
+
+const device = try Cuda.Device.default();
+defer device.deinit();
+
+const ptx = try Cuda.Compile.cudaText(kernel_source, null, allocator);
+defer allocator.free(ptx);
+
+const module = try Cuda.Device.loadPtxText(ptx);
+const func = try module.getFunc("scale");
+
+const host_data = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+const cu_slice = try device.htodCopy(f32, &host_data);
+defer cu_slice.free();
+
+var factor: f32 = 2.0;
+var n: i32 = 4;
+
+try func.run(
+    .{ &cu_slice.device_ptr, &factor, &n },
+    Cuda.LaunchConfig.for_num_elems(4),
+);
+
+var results = try Cuda.Device.syncReclaim(f32, allocator, cu_slice);
+defer results.deinit();
+// results.items == { 2.0, 4.0, 6.0, 8.0 }
+```
+
+<Tip>
+For kernels that operate on `CudaSlice` buffers, pass `&cu_slice.device_ptr` rather than the slice itself. The CUDA driver kernel receives a `CUdeviceptr` (which is an integer type), so you take the address of the `device_ptr` field and let the driver dereference it.
+</Tip>

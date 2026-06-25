@@ -1,0 +1,147 @@
+---
+title: "CudaSlice API Reference — Type-Safe GPU Buffer"
+sidebarTitle: "CudaSlice"
+description: "Reference for CudaSlice(T) and CudaSliceR, cudaz's GPU buffer types. Covers fields, clone, free, and the runtime-typed DType enum."
+---
+
+cudaz provides two complementary GPU buffer types. `CudaSlice(T)` is a generic, comptime-typed buffer that gives you full type safety and lets the Zig compiler verify element types at build time. `CudaSliceR` is its runtime-typed counterpart that carries a `DType` tag instead of a comptime type parameter, making it useful for dynamic dispatch and generic pipelines where the element type is not known until runtime. Both types are thin wrappers around a `CUdeviceptr` and expose `clone` and `free` methods.
+
+---
+
+## `CudaSlice(T)`
+
+`CudaSlice(T)` is a comptime-generic struct parameterized by the element type `T`. It is the return type of `Device.alloc`, `Device.allocZeros`, `Device.htodCopy`, and `Rng.genrandom`.
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `device_ptr` | `cuda.CUdeviceptr` | Opaque handle to the GPU memory region |
+| `len` | `usize` | Number of elements (not bytes) in the buffer |
+| `device` | `Device` | The `Device` on which this memory was allocated |
+| `element_type` | `type` *(comptime)* | The element type `T`; accessible as `MySlice.element_type` |
+
+### `clone`
+
+```zig
+pub fn clone(self: CudaSlice(T)) CudaError.Error!CudaSlice(T)
+```
+
+Performs a device-to-device memory copy using `cuMemcpyDtoD_v2`, allocating a new `CudaSlice(T)` of the same length on the same device. The original slice is not freed. The caller owns the returned slice and must call `free()` on it.
+
+**Returns:** `CudaError.Error!CudaSlice(T)`
+
+### `free`
+
+```zig
+pub fn free(self: CudaSlice(T)) void
+```
+
+Frees the GPU memory held by this slice via `cuMemFree_v2`. Panics if the underlying CUDA call fails. Always call `free` (or pair it with `defer`) when you are done with a slice.
+
+<Warning>
+`free` panics on error rather than returning one. If you need error handling on deallocation, use `Device.free(slice.device_ptr)` directly.
+</Warning>
+
+### Example
+
+```zig
+const device = try Cuda.Device.default();
+defer device.deinit();
+
+const slice = try device.alloc(f32, 512);
+defer slice.free();
+
+const copy = try slice.clone();
+defer copy.free();
+```
+
+---
+
+## `CudaSliceR`
+
+`CudaSliceR` is the runtime-typed GPU slice. Instead of a comptime `T`, it stores a `DType` value in its `element_type` field. This makes it suitable for scenarios where you do not know the element type at compile time, or where you want a single variable that can hold slices of different types.
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `device_ptr` | `cuda.CUdeviceptr` | Opaque handle to the GPU memory region |
+| `len` | `usize` | Number of elements (not bytes) in the buffer |
+| `device` | `Device` | The `Device` on which this memory was allocated |
+| `element_type` | `DType` | Runtime element type tag (`.f16` or `.f32`) |
+
+### `clone`
+
+```zig
+pub fn clone(self: *const CudaSliceR) CudaError.Error!CudaSliceR
+```
+
+Performs a device-to-device copy using `cuMemcpyDtoD_v2`. The `element_type` field is preserved in the returned slice. The byte count is computed as `element_type.size() * len`.
+
+**Returns:** `CudaError.Error!CudaSliceR`
+
+### `free`
+
+```zig
+pub fn free(self: CudaSliceR) void
+```
+
+Frees GPU memory via `cuMemFree_v2`. Panics on error.
+
+### Example
+
+```zig
+const device = try Cuda.Device.default();
+defer device.deinit();
+
+const slice = try device.allocR(.f32, 512);
+defer slice.free();
+
+const copy = try slice.clone();
+defer copy.free();
+```
+
+<Note>
+To bring data from a `CudaSliceR` back to the host, use `Device.syncReclaimR`. You must supply the concrete comptime type at the call site — it must match `slice.element_type`.
+</Note>
+
+---
+
+## `DType`
+
+`DType` is an enum that represents a GPU element type at runtime. It is used by `CudaSliceR`, `Device.allocR`, and `Device.allocZerosR`.
+
+```zig
+pub const DType = enum(u8) {
+    f16 = 0,
+    f32 = 1,
+    // ...
+};
+```
+
+### Variants
+
+| Variant | Backing value | Element size |
+|---|---|---|
+| `DType.f16` | `0` | 2 bytes (`@sizeOf(f16)`) |
+| `DType.f32` | `1` | 4 bytes (`@sizeOf(f32)`) |
+
+### `size`
+
+```zig
+pub fn size(self: DType) usize
+```
+
+Returns the element size in bytes for the given `DType`.
+
+<ParamField path="self" type="DType" required>
+  The runtime element type whose size to query.
+</ParamField>
+
+**Returns:** `usize` — `2` for `.f16`, `4` for `.f32`
+
+```zig
+const bytes_per_elem = DType.f32.size(); // 4
+const total_bytes = bytes_per_elem * 1024; // 4096
+```

@@ -1,0 +1,81 @@
+---
+title: "GPU Random Number Generation with cuRAND in cudaz"
+sidebarTitle: "Random Numbers"
+description: "Generate arrays of uniform random float values directly on the GPU using cudaz's Rng type, backed by NVIDIA's cuRAND library."
+---
+
+cudaz wraps NVIDIA's cuRAND library through the `Rng` type, enabling you to generate large arrays of random numbers entirely on the GPU without round-tripping data through the CPU. The generator allocates device memory, fills it with uniform pseudo-random `f32` values, and returns a `CudaSlice(f32)` that you can pass directly to other GPU kernels or copy back to the host with `Device.syncReclaim`.
+
+## Creating an RNG
+
+There are two constructors depending on how much control you need over the device and seed.
+
+### `Rng.default()`
+
+Creates a generator on GPU 0 with the default seed (`0`) using `CURAND_RNG_PSEUDO_DEFAULT`. This is the quickest way to get started.
+
+```zig
+const rng = try Cuda.Rng.default();
+```
+
+### `Rng.init(device, seed)`
+
+Creates a generator bound to a specific `Device` and an optional seed. Pass `null` for the seed to use the default value of `0`.
+
+```zig
+const device = try Cuda.Device.default();
+defer device.deinit();
+const rng = try Cuda.Rng.init(device, 42);
+```
+
+Using `init` is useful when you already have a `Device` in scope and want to share its context, or when you need reproducible results with a fixed seed.
+
+## Generating Random Numbers
+
+Call `rng.genrandom(size)` to fill a freshly allocated device buffer with `size` uniform random `f32` values in the range `[0, 1)`. The method allocates GPU memory via `cudaMalloc`, fills it with `curandGenerateUniform`, and returns the resulting `CudaSlice(f32)`.
+
+```zig
+const slice = try rng.genrandom(1000);
+defer slice.free();
+// Copy back to host
+var arr = try Cuda.Device.syncReclaim(f32, allocator, slice);
+defer arr.deinit(allocator);
+```
+
+`arr.items` is now a regular Zig slice of 1000 `f32` values you can inspect or process on the host.
+
+## Full Working Example
+
+The test suite for the RNG module demonstrates the complete round-trip in a few lines:
+
+```zig
+const rng = try Cuda.Rng.default();
+const slice = try rng.genrandom(100);
+defer slice.free();
+var arr = try Cuda.Device.syncReclaim(f32, std.testing.allocator, slice);
+defer arr.deinit(std.testing.allocator);
+// arr.items contains 100 uniform random f32 in [0, 1)
+```
+
+## cuRAND Generator Types
+
+cuRAND ships with several pseudo-random generator algorithms, each making different trade-offs between throughput, period length, and statistical quality. cudaz currently creates generators using `CURAND_RNG_PSEUDO_DEFAULT`, which lets the cuRAND library select a sensible default for the current hardware. The full set of available pseudo-random types is:
+
+| Constant | Description |
+|---|---|
+| `CURAND_RNG_PSEUDO_DEFAULT` | Library-selected default (used by cudaz). |
+| `CURAND_RNG_PSEUDO_XORWOW` | XORWOW generator—fast, widely used. |
+| `CURAND_RNG_PSEUDO_MRG32K3A` | Combined multiple-recursive generator. |
+| `CURAND_RNG_PSEUDO_MTGP32` | Mersenne Twister for GPU (MTGP32). |
+| `CURAND_RNG_PSEUDO_MT19937` | Classic MT19937 Mersenne Twister. |
+| `CURAND_RNG_PSEUDO_PHILOX4_32_10` | Counter-based Philox 4×32-10. |
+
+Because `Rng.default()` and `Rng.init()` both hard-code `CURAND_RNG_PSEUDO_DEFAULT`, choosing a different generator type requires calling the cuRAND C API directly via `Cuda.CAPI.curand`.
+
+<Note>
+  The cuRAND shared library must be linked in your `build.zig`. Add the following line when configuring your executable or test target:
+
+  ```zig
+  sub_test.root_module.linkSystemLibrary("curand", .{});
+  ```
+</Note>

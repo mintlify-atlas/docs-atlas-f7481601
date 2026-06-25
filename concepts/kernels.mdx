@@ -1,0 +1,184 @@
+---
+title: "CUDA Kernel Compilation and Execution in cudaz"
+sidebarTitle: "Kernels"
+description: "Learn how cudaz compiles CUDA C source to PTX at runtime using NVRTC, loads PTX modules, retrieves kernel functions, and executes them on the GPU."
+---
+
+cudaz provides a complete pipeline for running CUDA kernels from Zig: write your kernel in CUDA C, compile it to PTX at runtime using NVRTC, load the PTX into a `Module`, look up the kernel by name as a `Function`, and finally launch it with a `LaunchConfig`. Each stage is a distinct, composable step, so you can cache PTX between runs, pre-compile kernels at startup, or load PTX from disk — whichever fits your workflow.
+
+## The `Module` and `Function` Types
+
+**`Module`** wraps a `CUmodule` and represents a compiled PTX image loaded onto the device. You obtain a `Module` by calling one of the `Device.loadPtx*` functions.
+
+**`Function`** wraps a `CUfunction` and represents a single kernel entry point within a module. You obtain a `Function` by calling `module.getFunc("kernel_name")`.
+
+Neither type manages its own lifetime — unloading a module is left to future cudaz versions. In practice, modules are typically kept alive for the full duration of the program.
+
+## Compiling CUDA Kernels with `Compile`
+
+The `Compile` module wraps NVRTC (NVIDIA Runtime Compilation) and turns CUDA C source into a PTX string at runtime. Both functions return `[:0]const u8` — a sentinel-terminated PTX string that the caller must free with the same allocator.
+
+### `Compile.cudaText(cuda_src, options, allocator)`
+
+Compiles an inline CUDA C string. Pass `null` or `.{}` for `options` to use defaults:
+
+```zig
+const kernel_source =
+    \\extern "C" __global__ void add(float* a, float* b, float* out, int n) {
+    \\    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    \\    if (i < n) out[i] = a[i] + b[i];
+    \\}
+;
+
+const ptx = try Cuda.Compile.cudaText(kernel_source, .{}, allocator);
+defer allocator.free(ptx);
+```
+
+### `Compile.cudaFile(file, io, options, allocator)`
+
+Compiles a `.cu` file from disk. The file is read into a 1 MB buffer, null-terminated, and then passed to `cudaText` internally:
+
+```zig
+const file = try std.fs.cwd().openFile("kernels/add.cu", .{});
+const ptx = try Cuda.Compile.cudaFile(file, io, null, allocator);
+defer allocator.free(ptx);
+```
+
+### Compile Options
+
+The `Options` struct supports fine-grained NVRTC flags:
+
+| Field | Type | NVRTC flag |
+|---|---|---|
+| `ftz` | `?bool` | `--ftz` |
+| `prec_sqrt` | `?bool` | `--prec-sqrt` |
+| `prec_div` | `?bool` | `--prec-div` |
+| `use_fast_math` | `?bool` | `--fmad` |
+| `maxrregcount` | `?usize` | `--maxrregcount` |
+| `include_paths` | `[][]const u8` | `--include-path` |
+| `arch` | `[][]const u8` | `-arch` |
+| `macro` | `[][]const u8` | `--define-macro` |
+
+Pass `null` to omit all options and let NVRTC use its defaults.
+
+## Loading PTX
+
+Once you have a PTX string or file, load it into a `Module` through the `Device`.
+
+### `Device.loadPtxText(ptx)`
+
+Loads a PTX image from an in-memory sentinel-terminated string. This is the most common path — use the PTX returned by `Compile.cudaText` or `Compile.cudaFile`:
+
+```zig
+const module = try device.loadPtxText(ptx);
+```
+
+### `Device.loadPtx(PathBuffer)`
+
+Loads a PTX image directly from a file path on disk, bypassing the in-memory string entirely. Useful when you have pre-compiled `.ptx` files bundled with your application:
+
+```zig
+const module = try Cuda.Device.loadPtx(path_buf);
+```
+
+## Getting a Kernel Function
+
+`module.getFunc(name)` looks up a kernel entry point by its C symbol name and returns a `Function`:
+
+```zig
+const add_fn = try module.getFunc("add");
+```
+
+The `name` argument must match the symbol exactly as it appears in the compiled PTX. Using `extern "C"` in your CUDA source (see below) ensures the symbol name is not mangled.
+
+## Running a Kernel
+
+`function.run(params, cfg)` launches the kernel via `cuLaunchKernel`. The `params` argument must be a Zig **struct of pointers** to the kernel arguments — each field must be a pointer, not a value.
+
+```zig
+try add_fn.run(.{
+    &cu_a.device_ptr,
+    &cu_b.device_ptr,
+    &cu_out.device_ptr,
+    &n,
+}, cfg);
+```
+
+Passing a struct that is not a struct type causes a compile-time error (`@compileError`).
+
+## Full End-to-End Example
+
+<Steps>
+  <Step title="Write the CUDA kernel">
+    ```cuda
+    extern "C" __global__ void scale(float* data, float factor, int n) {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i < n) data[i] *= factor;
+    }
+    ```
+  </Step>
+  <Step title="Initialize device and compile">
+    ```zig
+    const device = try Cuda.Device.default();
+    defer device.deinit();
+
+    const ptx = try Cuda.Compile.cudaText(kernel_source, null, allocator);
+    defer allocator.free(ptx);
+    ```
+  </Step>
+  <Step title="Load PTX and get function">
+    ```zig
+    const module = try device.loadPtxText(ptx);
+    const scale_fn = try module.getFunc("scale");
+    ```
+  </Step>
+  <Step title="Upload data and configure launch">
+    ```zig
+    const host_data = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    const cu_data = try device.htodCopy(f32, &host_data);
+    defer cu_data.free();
+
+    var factor: f32 = 2.0;
+    var n: i32 = @intCast(host_data.len);
+    const cfg = Cuda.LaunchConfig.for_num_elems(@intCast(host_data.len));
+    ```
+  </Step>
+  <Step title="Launch and retrieve results">
+    ```zig
+    try scale_fn.run(.{ &cu_data.device_ptr, &factor, &n }, cfg);
+
+    var result = try Cuda.Device.syncReclaim(f32, allocator, cu_data);
+    defer result.deinit();
+    // result.items is now { 2.0, 4.0, 6.0, 8.0 }
+    ```
+  </Step>
+</Steps>
+
+## Writing CUDA Kernels
+
+CUDA kernels intended for use with cudaz must be declared with `extern "C"` to prevent C++ name mangling. Without it, the symbol name in the PTX will not match the string you pass to `getFunc`:
+
+```cuda
+// Correct — symbol name is "my_kernel" in PTX
+extern "C" __global__ void my_kernel(float* data, int n) { ... }
+
+// Wrong — C++ mangles the name; getFunc("my_kernel") will fail
+__global__ void my_kernel(float* data, int n) { ... }
+```
+
+The standard 1D thread-index pattern for element-wise operations is:
+
+```cuda
+extern "C" __global__ void elementwise(float* data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        data[i] = data[i] * 2.0f;
+    }
+}
+```
+
+The bounds check `if (i < n)` is essential when `n` is not an exact multiple of the block size, which is the common case with `LaunchConfig.for_num_elems`.
+
+<Warning>
+  Kernel `params` must be pointers to each argument. Pass `&cu_slice.device_ptr`, **not** `cu_slice.device_ptr`. The CUDA driver reads the address of each argument from the params array — if you pass a value instead of a pointer, the driver will dereference garbage memory and the kernel will silently compute wrong results or crash.
+</Warning>

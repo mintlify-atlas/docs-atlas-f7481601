@@ -1,0 +1,113 @@
+---
+title: "Installing cudaz in Your Zig Project"
+sidebarTitle: "Installation"
+description: "Install cudaz using zig fetch for Zig 0.13 through 0.16. Configure build.zig to link CUDA, NVRTC, and add the cudaz module."
+---
+
+Before adding cudaz to your project, make sure you have two prerequisites in place: the **NVIDIA CUDA Toolkit** installed on your system (which provides the `cuda.h` header, and the `libcuda`, `libnvrtc` shared libraries), and a supported **Zig toolchain** (0.13.0 through 0.16.0). cudaz ships separate tagged releases for each Zig version, so you must fetch the correct archive for the compiler you are using.
+
+<Warning>
+  cudaz does **not** support Windows. Building on Windows will immediately fail with `error.WINDOWS_NOT_SUPPORTED`. Use Linux or macOS.
+</Warning>
+
+<Steps>
+  <Step title="Fetch cudaz and save it to build.zig.zon">
+    Run the `zig fetch --save` command for your Zig version. This downloads the cudaz source archive and writes the URL and content hash into your project's `build.zig.zon` file automatically.
+
+    <Tabs>
+      <Tab title="zig 0.16.0">
+        ```bash
+        zig fetch --save https://github.com/akhildevelops/cudaz/archive/0.4.0.tar.gz
+        ```
+      </Tab>
+      <Tab title="zig 0.15.2">
+        ```bash
+        zig fetch --save https://github.com/akhildevelops/cudaz/archive/0.3.1.tar.gz
+        ```
+      </Tab>
+      <Tab title="zig 0.14.1">
+        ```bash
+        zig fetch --save https://github.com/akhildevelops/cudaz/archive/0.2.1.tar.gz
+        ```
+      </Tab>
+      <Tab title="zig 0.13.0">
+        ```bash
+        zig fetch --save https://github.com/akhildevelops/cudaz/archive/0.1.0.tar.gz
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Configure build.zig">
+    Add the cudaz module to your executable and link the required system libraries. The key steps are: retrieve the `cudaz` dependency, import its `cudaz` module, then link `libc`, `libcuda`, and `libnvrtc`.
+
+    ```zig build.zig
+    const std = @import("std");
+
+    pub fn build(b: *std.Build) !void {
+        // exe points to main.zig that uses cudaz
+        const exe = b.addExecutable(.{
+            .name = "main",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = b.standardTargetOptions(.{}),
+            }),
+        });
+
+        // Point to cudaz dependency
+        const cudaz_dep = b.dependency(
+            "cudaz",
+            .{}, // replace with `.{ .CUDA_PATH = @as([]const u8, "<your cuda path>") }`
+                 // to specify a custom CUDA installation path
+        );
+
+        // Fetch and add the module from cudaz dependency
+        const cudaz_module = cudaz_dep.module("cudaz");
+        exe.root_module.addImport("cudaz", cudaz_module);
+
+        // Dynamically link to libc, cuda, nvrtc
+        exe.root_module.link_libc = true;
+        exe.root_module.linkSystemLibrary("cuda", .{});
+        exe.root_module.linkSystemLibrary("nvrtc", .{});
+
+        // Run binary
+        const run = b.step("run", "Run the binary");
+        const run_step = b.addRunArtifact(exe);
+        run.dependOn(&run_step.step);
+    }
+    ```
+  </Step>
+
+  <Step title="Verify the build">
+    With a CUDA-capable GPU present and the CUDA toolkit installed, run:
+
+    ```bash
+    zig build
+    ```
+
+    A successful build with no errors confirms that cudaz was fetched, the CUDA headers were located, and the linker found `libcuda` and `libnvrtc`. If the build fails, see the custom CUDA path section below.
+  </Step>
+</Steps>
+
+## Specifying a custom CUDA path
+
+By default, cudaz searches for the CUDA toolkit in these standard locations (in order):
+
+- `/usr`
+- `/usr/local/cuda`
+- `/opt/cuda`
+- `/usr/lib/cuda`
+
+It confirms a valid installation by checking for the presence of `include/cuda.h` under each candidate directory. If your CUDA toolkit is installed somewhere else — for example, a versioned directory like `/usr/local/cuda-12.4` — you can override the search by passing the `-DCUDA_PATH` build option:
+
+```bash
+zig build -DCUDA_PATH=/usr/local/cuda-12.4
+```
+
+You can also bake the custom path into your dependency declaration inside `build.zig` so every developer on the project uses the same path:
+
+```zig build.zig
+const cudaz_dep = b.dependency("cudaz", .{
+    .CUDA_PATH = @as([]const u8, "/usr/local/cuda-12.4"),
+});
+```

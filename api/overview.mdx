@@ -1,0 +1,56 @@
+---
+title: "cudaz API Overview: Modules and Public Exports"
+sidebarTitle: "Overview"
+description: "Complete overview of cudaz's public API surface: Device, CudaSlice, Compile, Module, Function, LaunchConfig, Rng, and CudaError types."
+---
+
+cudaz exposes a single top-level namespace that you import with `@import("cudaz")`. From that namespace you get fully typed handles for every stage of GPU programming: device management, memory allocation, kernel compilation, PTX loading, kernel launch configuration, and random number generation. All error conditions surface as Zig error unions so you can handle them with `try` or `catch` like any other Zig code.
+
+## Importing cudaz
+
+```zig
+const Cuda = @import("cudaz");
+```
+
+Every symbol described in this reference is accessed through this `Cuda` namespace.
+
+## Public Exports
+
+| Export | Type | Purpose |
+|---|---|---|
+| `Cuda.Device` | `struct` | GPU device management, memory allocation, and host↔device transfers |
+| `Cuda.Compile` | `namespace` | Runtime CUDA kernel compilation to PTX via NVRTC |
+| `Cuda.LaunchConfig` | `struct` | Kernel launch grid and block dimension configuration |
+| `Cuda.Cudaslice` | `fn(type) type` | Generic type alias for `CudaSlice(T)` — a type-safe GPU buffer |
+| `Cuda.Module` | `struct` | A loaded PTX module on the device |
+| `Cuda.Function` | `struct` | A kernel function handle retrieved from a Module |
+| `Cuda.Rng` | `struct` | GPU random number generator backed by cuRAND |
+| `Cuda.CAPI` | `namespace` | Raw C API access (CUDA driver, NVRTC, cuRAND headers) |
+| `Cuda.CudaError` | `error union` | Combined error set covering CUDA driver and cuRAND error codes |
+
+<Note>
+`Cuda.CudaError` is defined as `CurandError.Error || NvrtcError.Error` — the full set of error codes that any cudaz function may return. Individual functions declare more specific subsets in their signatures.
+</Note>
+
+## Module Pages
+
+<CardGroup cols={2}>
+  <Card title="Device" icon="microchip" href="/api/device">
+    Initialize GPUs, allocate and transfer memory, load PTX modules, and manage device contexts.
+  </Card>
+  <Card title="CudaSlice" icon="database" href="/api/cudaSlice">
+    Type-safe GPU buffer types: the generic `CudaSlice(T)`, the runtime-typed `CudaSliceR`, and the `DType` enum.
+  </Card>
+  <Card title="Compile" icon="code" href="/api/compile">
+    Compile inline CUDA C strings or `.cu` files to PTX at runtime using NVRTC, with full option control.
+  </Card>
+  <Card title="Module & Function" icon="play" href="/api/module-function">
+    Load PTX modules onto a device, look up kernel functions by name, and launch them with typed parameters.
+  </Card>
+  <Card title="LaunchConfig" icon="sliders" href="/api/launch-config">
+    Configure kernel grid and block dimensions manually or auto-compute them for a given element count.
+  </Card>
+  <Card title="Rng" icon="shuffle" href="/api/rng">
+    Generate arrays of uniform random `f32` values on the GPU using cuRAND pseudo-random generators.
+  </Card>
+</CardGroup>

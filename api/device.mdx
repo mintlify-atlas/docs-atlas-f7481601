@@ -1,0 +1,404 @@
+---
+title: "Device API Reference — cudaz GPU Management"
+sidebarTitle: "Device"
+description: "Complete reference for the cudaz Device type: initialization, memory allocation, host-device transfers, PTX loading, and context management."
+---
+
+`Device` is the central type in cudaz. It represents a single NVIDIA GPU and its primary CUDA context. You use a `Device` to allocate GPU memory, copy data between host and device, load compiled PTX modules, and free resources. Most cudaz workflows begin by calling `Device.default()` or `Device.new(gpu)` and end with `device.deinit()`.
+
+## Import
+
+```zig
+const CuDevice = @import("cudaz").Device;
+```
+
+## Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `device` | `cuda.CUdevice` | Underlying CUDA device handle from the driver API |
+| `primary_context` | `cuda.CUcontext` | The primary context retained for this device |
+| `ordinal` | `u16` | Zero-based GPU index used to select this device |
+
+---
+
+## Initialization
+
+### `default`
+
+```zig
+pub fn default() CudaError.Error!Device
+```
+
+Initializes and returns a `Device` for GPU 0. Calls `cuInit`, retrieves device 0, retains its primary context, and sets it as the current context. Equivalent to `Device.new(0)`.
+
+**Returns:** `CudaError.Error!Device`
+
+```zig
+const device = try CuDevice.default();
+defer device.deinit();
+```
+
+---
+
+### `new`
+
+```zig
+pub fn new(gpu: u16) CudaError.Error!Device
+```
+
+Initializes and returns a `Device` for the GPU at the specified ordinal index.
+
+<ParamField path="gpu" type="u16" required>
+  Zero-based index of the GPU to initialize. Pass `0` for the first GPU, `1` for the second, and so on.
+</ParamField>
+
+**Returns:** `CudaError.Error!Device`
+
+```zig
+const device = try CuDevice.new(1); // second GPU
+defer device.deinit();
+```
+
+---
+
+### `deinit`
+
+```zig
+pub fn deinit(self: *const Device) void
+```
+
+Releases the primary context for this device via `cuDevicePrimaryCtxRelease`. Panics if the release fails. Call this with `defer` immediately after a successful `default()` or `new()`.
+
+<ParamField path="self" type="*const Device" required>
+  Pointer to the Device to release.
+</ParamField>
+
+---
+
+## Memory Allocation
+
+### `alloc`
+
+```zig
+pub fn alloc(self: Device, comptime T: type, length: usize) CudaError.Error!CudaSlice(T)
+```
+
+Allocates uninitialized GPU memory for `length` elements of type `T`. The returned `CudaSlice(T)` holds the device pointer and length. The caller is responsible for freeing the slice with `slice.free()`.
+
+<ParamField path="self" type="Device" required>
+  The device on which to allocate memory.
+</ParamField>
+<ParamField path="T" type="type" required>
+  Comptime element type (e.g., `f32`, `i32`, `u8`).
+</ParamField>
+<ParamField path="length" type="usize" required>
+  Number of elements to allocate. Total bytes allocated is `@sizeOf(T) * length`.
+</ParamField>
+
+**Returns:** `CudaError.Error!CudaSlice(T)`
+
+```zig
+const slice = try device.alloc(f32, 1024);
+defer slice.free();
+```
+
+---
+
+### `allocZeros`
+
+```zig
+pub fn allocZeros(self: Device, comptime T: type, length: usize) CudaError.Error!CudaSlice(T)
+```
+
+Allocates GPU memory for `length` elements of type `T` and immediately zero-initializes every byte using `cuMemsetD8_v2`. Equivalent to `alloc` followed by `memsetZeros`.
+
+<ParamField path="self" type="Device" required>
+  The device on which to allocate memory.
+</ParamField>
+<ParamField path="T" type="type" required>
+  Comptime element type.
+</ParamField>
+<ParamField path="length" type="usize" required>
+  Number of elements to allocate and zero.
+</ParamField>
+
+**Returns:** `CudaError.Error!CudaSlice(T)`
+
+```zig
+const zeros = try device.allocZeros(f32, 256);
+defer zeros.free();
+```
+
+---
+
+### `allocR`
+
+```zig
+pub fn allocR(self: Device, dtype: DType, length: usize) CudaError.Error!CudaSliceR
+```
+
+Allocates uninitialized GPU memory using a runtime `DType` value instead of a comptime type. Returns a `CudaSliceR` whose `element_type` field carries the `DType` for later dispatch.
+
+<ParamField path="self" type="Device" required>
+  The device on which to allocate memory.
+</ParamField>
+<ParamField path="dtype" type="DType" required>
+  Runtime element type — `.f16` (2 bytes) or `.f32` (4 bytes).
+</ParamField>
+<ParamField path="length" type="usize" required>
+  Number of elements to allocate.
+</ParamField>
+
+**Returns:** `CudaError.Error!CudaSliceR`
+
+```zig
+const slice = try device.allocR(.f32, 512);
+defer slice.free();
+```
+
+---
+
+### `allocZerosR`
+
+```zig
+pub fn allocZerosR(self: Device, dtype: DType, length: usize) CudaError.Error!CudaSliceR
+```
+
+Runtime-typed equivalent of `allocZeros`. Allocates and zero-initializes GPU memory with element type determined at runtime.
+
+<ParamField path="self" type="Device" required>
+  The device on which to allocate memory.
+</ParamField>
+<ParamField path="dtype" type="DType" required>
+  Runtime element type.
+</ParamField>
+<ParamField path="length" type="usize" required>
+  Number of elements to allocate and zero.
+</ParamField>
+
+**Returns:** `CudaError.Error!CudaSliceR`
+
+---
+
+## Host ↔ Device Transfers
+
+### `htodCopy`
+
+```zig
+pub fn htodCopy(self: Device, comptime T: type, src: []const T) CudaError.Error!CudaSlice(T)
+```
+
+Allocates a new `CudaSlice(T)` on the device and copies all elements from the host slice `src` into it in one operation. The returned slice has the same length as `src`.
+
+<ParamField path="self" type="Device" required>
+  The device to allocate on and copy to.
+</ParamField>
+<ParamField path="T" type="type" required>
+  Comptime element type.
+</ParamField>
+<ParamField path="src" type="[]const T" required>
+  Host slice to copy from. The entire slice is transferred.
+</ParamField>
+
+**Returns:** `CudaError.Error!CudaSlice(T)`
+
+```zig
+const host_data = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+const gpu_slice = try device.htodCopy(f32, &host_data);
+defer gpu_slice.free();
+```
+
+---
+
+### `htodCopyInto`
+
+```zig
+pub fn htodCopyInto(comptime T: type, src: []const T, destination: CudaSlice(T)) CudaError.Error!void
+```
+
+Copies `src` into an already-allocated `CudaSlice(T)`. Asserts that `src.len == destination.len`. Use this when you want to reuse an existing GPU allocation rather than allocating a new one.
+
+<ParamField path="T" type="type" required>
+  Comptime element type.
+</ParamField>
+<ParamField path="src" type="[]const T" required>
+  Host slice to copy from. Must have the same length as `destination`.
+</ParamField>
+<ParamField path="destination" type="CudaSlice(T)" required>
+  Pre-allocated GPU slice to copy into.
+</ParamField>
+
+**Returns:** `CudaError.Error!void`
+
+```zig
+const new_data = [_]f32{ 5.0, 6.0, 7.0, 8.0 };
+try CuDevice.htodCopyInto(f32, &new_data, gpu_slice);
+```
+
+---
+
+### `dtohCopy`
+
+```zig
+pub fn dtohCopy(comptime T: type, allocator: Allocator, slice: CudaSlice(T)) ![]T
+```
+
+Allocates a host buffer with `allocator` and copies the contents of `slice` into it. The returned `[]T` is owned by the caller and must be freed with `allocator.free(...)`.
+
+<ParamField path="T" type="type" required>
+  Comptime element type.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator used to create the host buffer.
+</ParamField>
+<ParamField path="slice" type="CudaSlice(T)" required>
+  GPU slice to copy from.
+</ParamField>
+
+**Returns:** `![]T` — heap-allocated host slice
+
+```zig
+const host_buf = try CuDevice.dtohCopy(f32, allocator, gpu_slice);
+defer allocator.free(host_buf);
+```
+
+---
+
+### `syncReclaim`
+
+```zig
+pub fn syncReclaim(comptime T: type, allocator: Allocator, slice: CudaSlice(T)) !std.ArrayList(T)
+```
+
+Copies the GPU slice to a newly-created `ArrayList(T)`. The returned `ArrayList` owns its memory; call `arr.deinit()` when done. This is a convenience wrapper around `dtohCopy` for callers that prefer `ArrayList`.
+
+<ParamField path="T" type="type" required>
+  Comptime element type.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator for the `ArrayList`.
+</ParamField>
+<ParamField path="slice" type="CudaSlice(T)" required>
+  GPU slice to copy from.
+</ParamField>
+
+**Returns:** `!std.ArrayList(T)`
+
+```zig
+var results = try CuDevice.syncReclaim(f32, allocator, gpu_slice);
+defer results.deinit();
+std.debug.print("first element: {d}\n", .{results.items[0]});
+```
+
+---
+
+### `syncReclaimR`
+
+```zig
+pub fn syncReclaimR(comptime T: type, allocator: Allocator, slice: CudaSliceR) !std.ArrayList(T)
+```
+
+Runtime-typed variant of `syncReclaim`. Copies a `CudaSliceR` to an `ArrayList(T)`. You must supply the concrete `T` at the call site; it must match the runtime `DType` stored in `slice.element_type`.
+
+<ParamField path="T" type="type" required>
+  Comptime element type — must match `slice.element_type`.
+</ParamField>
+<ParamField path="allocator" type="std.mem.Allocator" required>
+  Allocator for the `ArrayList`.
+</ParamField>
+<ParamField path="slice" type="CudaSliceR" required>
+  Runtime-typed GPU slice to copy from.
+</ParamField>
+
+**Returns:** `!std.ArrayList(T)`
+
+---
+
+## PTX Loading
+
+### `loadPtx`
+
+```zig
+pub fn loadPtx(file_path: PathBuffer) CudaError.Error!Module
+```
+
+Loads a PTX file from disk into a `CUmodule` using `cuModuleLoad`. The `PathBuffer` wraps a null-terminated path string.
+
+<ParamField path="file_path" type="PathBuffer" required>
+  Null-terminated path to the `.ptx` file to load.
+</ParamField>
+
+**Returns:** `CudaError.Error!Module`
+
+```zig
+const module = try CuDevice.loadPtx(path_buf);
+```
+
+---
+
+### `loadPtxText`
+
+```zig
+pub fn loadPtxText(ptx: [:0]const u8) CudaError.Error!Module
+```
+
+Loads a PTX module directly from a null-terminated PTX string in memory using `cuModuleLoadData`. Use this after compiling with `Cuda.Compile.cudaText` or `cudaFile`.
+
+<ParamField path="ptx" type="[:0]const u8" required>
+  Null-terminated PTX string, as returned by the `Compile` functions.
+</ParamField>
+
+**Returns:** `CudaError.Error!Module`
+
+```zig
+const ptx = try Cuda.Compile.cudaText(kernel_source, null, allocator);
+defer allocator.free(ptx);
+const module = try CuDevice.loadPtxText(ptx);
+const func = try module.getFunc("my_kernel");
+```
+
+---
+
+## Memory Utilities
+
+### `memsetZeros`
+
+```zig
+pub fn memsetZeros(comptime T: type, cuda_slice: CudaSlice(T)) CudaError.Error!void
+```
+
+Sets every byte of the GPU slice to zero using `cuMemsetD8_v2`. Useful for resetting a previously allocated buffer.
+
+<ParamField path="T" type="type" required>
+  Comptime element type of the slice.
+</ParamField>
+<ParamField path="cuda_slice" type="CudaSlice(T)" required>
+  The GPU buffer to zero-fill.
+</ParamField>
+
+**Returns:** `CudaError.Error!void`
+
+```zig
+try CuDevice.memsetZeros(f32, my_slice);
+```
+
+---
+
+### `free`
+
+```zig
+pub fn free(ptr: cuda.CUdeviceptr) !void
+```
+
+Frees a raw GPU device pointer via `cuMemFree_v2`. Prefer calling `slice.free()` on a `CudaSlice` or `CudaSliceR` instead, which handles the pointer internally.
+
+<ParamField path="ptr" type="cuda.CUdeviceptr" required>
+  The raw device pointer to free.
+</ParamField>
+
+**Returns:** `!void`
+
+<Warning>
+Calling `free` on a pointer that was already freed, or on a pointer not obtained from `cuMemAlloc`, results in a CUDA error. Prefer the `free()` method on `CudaSlice(T)` and `CudaSliceR` for safety.
+</Warning>

@@ -1,0 +1,181 @@
+---
+title: "Example: Send Custom Struct Types to the GPU"
+sidebarTitle: "Custom Type"
+description: "cudaz example showing how to transfer arrays of C-compatible structs to the GPU and process them with a CUDA kernel that computes field offsets."
+---
+
+This example extends the basic array walkthrough to demonstrate GPU processing of complex, structured data. Instead of a flat `f32` array, the host program builds an array of `tuple` structs — each holding an `x` and a `y` field — copies the whole array to GPU memory, and runs a kernel that computes `y - x` for every element in parallel. The result is a plain `f32` array copied back to the host. This pattern applies any time you need to pass records, vectors, or packed data to a kernel.
+
+## The Shared C Type
+
+The struct is defined in a plain C header so that both the Zig host program and the CUDA kernel refer to the same memory layout.
+
+```c c/tuple.h
+typedef struct
+{
+    float x;
+    float y;
+} tuple;
+```
+
+Because Zig can `@cImport` a C header directly, no manual struct definition is needed on the Zig side. The kernel, however, is compiled by NVRTC which does not support `#include` directives — so the struct is redefined inline in the kernel source string (see the warning below).
+
+## The CUDA Kernel
+
+```cuda src/offset.cu
+// Below typedef can be replaced by #include<tuple.h> but currently cudaz's nvrtc cannot handle #include directives.
+typedef struct
+{
+    float x;
+    float y;
+} tuple;
+
+extern "C" __global__ void offset(tuple *in, float *out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    out[i] = in[i].y - in[i].x;
+}
+```
+
+Thread `i` reads the `tuple` at `in[i]`, subtracts `x` from `y`, and writes the scalar result to `out[i]`. Because the `tuple` struct is C-compatible (plain data, no padding surprises for two consecutive `float` fields), the GPU interprets the memory exactly as the CPU laid it out.
+
+<Warning>
+  NVRTC does not support `#include` directives in runtime-compiled kernel
+  strings. Any struct or type that is defined in a header file must be
+  copy-pasted (or otherwise inlined) directly into the kernel source string
+  passed to `Compile.cudaText`. The comment at the top of `offset.cu` is a
+  reminder of this constraint.
+</Warning>
+
+## The Main Program
+
+```zig src/main.zig
+const std = @import("std");
+const Ctype = @cImport(@cInclude("../c/tuple.h"));
+const Cuda = @import("cudaz");
+const CuDevice = Cuda.Device;
+const CuCompile = Cuda.Compile;
+const CuLaunchConfig = Cuda.LaunchConfig;
+
+// Cuda Kernel
+const increment_kernel = @embedFile("offset.cu");
+
+pub fn main() !void {
+    // Initialize allocator
+    var gpa = std.heap.DebugAllocator(.{}).init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    std.debug.print("Initialized allocator\n", .{});
+
+    // Initialize GPU
+    const device = try CuDevice.default();
+    defer device.deinit();
+    std.debug.print("Cuda device is setup\n", .{});
+
+    // Initialize host data with a custom data type
+    var src_array = try std.ArrayList(Ctype.tuple).initCapacity(allocator, 10);
+    defer src_array.deinit(allocator);
+    for (0..10) |index| {
+        try src_array.append(allocator, .{ .x = @floatFromInt(index), .y = @as(f32, @floatFromInt(index)) + std.math.pi });
+    }
+
+    // Copy data from host to GPU
+    const src_cu_slice = try device.htodCopy(Ctype.tuple, src_array.items);
+    defer src_cu_slice.free();
+    std.debug.print("Copied tuple array {any} from system to GPU\n", .{src_array.items});
+
+    // Allocate 10 f32 in GPU memory for the output
+    const dest_cu_slice = try device.alloc(f32, 10);
+
+    // Compile and load the Kernel
+    const ptx = try CuCompile.cudaText(increment_kernel, .{}, allocator);
+    defer allocator.free(ptx);
+
+    const module = try CuDevice.loadPtxText(ptx);
+    const function = try module.getFunc("offset");
+    std.debug.print("Compiled Cuda Kernel that generates offsets between a tuple pair", .{});
+
+    // Run the kernel on the data
+    try function.run(
+        .{ &src_cu_slice.device_ptr, &dest_cu_slice.device_ptr },
+        CuLaunchConfig{ .block_dim = .{ 10, 1, 1 }, .grid_dim = .{ 1, 1, 1 }, .shared_mem_bytes = 0 },
+    );
+    std.debug.print("Ran the Kernel against the array in GPU\n", .{});
+
+    // Retrieve offset data back to the system
+    var incremented_arr = try CuDevice.syncReclaim(f32, allocator, dest_cu_slice);
+    defer incremented_arr.deinit(allocator);
+    std.debug.print("Retrieved offset data {any} from GPU to system\n", .{incremented_arr.items});
+}
+```
+
+## Step-by-Step Walkthrough
+
+<Steps>
+  <Step title="Import the C type with @cImport">
+    ```zig
+    const Ctype = @cImport(@cInclude("../c/tuple.h"));
+    ```
+    Zig's `@cImport` / `@cInclude` pipeline translates the C header into Zig type declarations at compile time. After this line, `Ctype.tuple` is a fully typed Zig struct with fields `.x: f32` and `.y: f32` whose memory layout matches the C definition exactly — no manual mirroring required.
+  </Step>
+
+  <Step title="Create an ArrayList of tuples and fill it">
+    ```zig
+    var src_array = try std.ArrayList(Ctype.tuple).initCapacity(allocator, 10);
+    for (0..10) |index| {
+        try src_array.append(allocator, .{
+            .x = @floatFromInt(index),
+            .y = @as(f32, @floatFromInt(index)) + std.math.pi,
+        });
+    }
+    ```
+    Each tuple gets `x = i` and `y = i + π`, so the expected offset for every element is `π ≈ 3.14159`.
+  </Step>
+
+  <Step title="Copy the struct array to GPU with htodCopy">
+    ```zig
+    const src_cu_slice = try device.htodCopy(Ctype.tuple, src_array.items);
+    ```
+    `htodCopy` is generic over the element type. Passing `Ctype.tuple` tells cudaz how many bytes each element occupies so it can compute the total transfer size correctly. The GPU receives a flat byte buffer that the kernel will interpret as an array of `tuple` structs.
+  </Step>
+
+  <Step title="Allocate a destination buffer for f32 results">
+    ```zig
+    const dest_cu_slice = try device.alloc(f32, 10);
+    ```
+    The output array is a different type (`f32`) from the input (`tuple`). `device.alloc` reserves GPU memory without any host-to-device transfer — the kernel will write into it directly.
+  </Step>
+
+  <Step title="Compile the kernel with the inline struct definition, then load PTX">
+    ```zig
+    const ptx = try CuCompile.cudaText(increment_kernel, .{}, allocator);
+    const module = try CuDevice.loadPtxText(ptx);
+    const function = try module.getFunc("offset");
+    ```
+    The embedded `offset.cu` source includes the `typedef struct { float x; float y; } tuple;` redefinition because NVRTC cannot resolve `#include` directives. `loadPtxText` uploads the compiled PTX to the driver, and `getFunc("offset")` returns the callable kernel handle.
+  </Step>
+
+  <Step title="Run the kernel with two GPU pointers">
+    ```zig
+    try function.run(
+        .{ &src_cu_slice.device_ptr, &dest_cu_slice.device_ptr },
+        CuLaunchConfig{ .block_dim = .{ 10, 1, 1 }, .grid_dim = .{ 1, 1, 1 }, .shared_mem_bytes = 0 },
+    );
+    ```
+    The kernel receives two device pointers: the input `tuple` array and the output `f32` array. The launch configuration uses 10 threads in one block — one thread per element.
+  </Step>
+
+  <Step title="Retrieve f32 results with syncReclaim">
+    ```zig
+    var incremented_arr = try CuDevice.syncReclaim(f32, allocator, dest_cu_slice);
+    ```
+    `syncReclaim` waits for the kernel to finish, copies `dest_cu_slice` back to a host `ArrayList(f32)`, and frees the GPU memory. Every element of `incremented_arr.items` should be approximately `π` because `y - x = (i + π) - i`.
+  </Step>
+</Steps>
+
+## Running the Example
+
+```bash
+cd cudaz/example/custom_type
+zig build run
+```

@@ -1,0 +1,192 @@
+---
+title: "Example: Increment an Array in Parallel on the GPU"
+sidebarTitle: "Increment Array"
+description: "Full working cudaz example that copies a float array to the GPU, runs a parallel increment kernel, and retrieves the results back to the host."
+---
+
+This example is the canonical "hello world" for cudaz — it takes a small float array on the CPU, copies it to the GPU, launches a parallel CUDA kernel that adds 1 to every element simultaneously, and retrieves the results back to the host. It covers the complete round-trip: host allocation, device transfer, kernel compilation, kernel launch, and result retrieval.
+
+## Prerequisites
+
+Before running this example make sure you have the following installed:
+
+- **CUDA Toolkit** — provides `libcuda`, `libnvrtc`, and the `nvcc` compiler. Download from [developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads).
+- **Zig 0.14.0** — the version targeted by cudaz. Install from [ziglang.org/download](https://ziglang.org/download).
+- **cudaz** — declared as a dependency in `build.zig.zon` (shown below); fetched automatically by `zig build`.
+
+## Project Structure
+
+```
+increment/
+├── build.zig
+├── build.zig.zon
+└── src/
+    ├── main.zig
+    └── increment.cu
+```
+
+## The CUDA Kernel
+
+The kernel is a plain CUDA C file that NVRTC compiles at runtime to PTX assembly.
+
+```cuda src/increment.cu
+extern "C" __global__ void increment(float *out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    out[i] = out[i] + 1;
+}
+```
+
+Each GPU thread receives a unique index computed from its block and thread coordinates:
+`i = blockIdx.x * blockDim.x + threadIdx.x`. Thread `i` reads `out[i]`, adds 1, and writes the result back — all 3 elements (or however many you launch) execute in parallel with no inter-thread dependencies.
+
+## The Main Program
+
+The Zig host program orchestrates the entire workflow: allocator setup, device initialization, memory transfer, kernel compilation, launch, and result retrieval.
+
+```zig src/main.zig
+const std = @import("std");
+const Cuda = @import("cudaz");
+const CuDevice = Cuda.Device;
+const CuCompile = Cuda.Compile;
+const CuLaunchConfig = Cuda.LaunchConfig;
+
+// Embed the .cu source file at compile time so it can be compiled by NVRTC at runtime
+const increment_kernel = @embedFile("./increment.cu");
+
+pub fn main() !void {
+    // Phase 1: Initialize allocator
+    var gpa = std.heap.DebugAllocator(.{}).init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    std.debug.print("Initialized allocator\n", .{});
+
+    // Phase 2: Initialize the default CUDA device (GPU 0)
+    const device = try CuDevice.default();
+    defer device.deinit();
+    std.debug.print("Cuda device is setup\n", .{});
+
+    // Phase 3: Copy host array to GPU memory
+    const data = [_]f32{ 1.2, 2.8, 0.123 };
+    const cu_slice = try device.htodCopy(f32, &data);
+    defer cu_slice.free();
+    std.debug.print("Copied array {any} from system to GPU\n", .{data});
+
+    // Phase 4: Compile the kernel source to PTX at runtime using NVRTC
+    std.debug.print("Kernel program:\n{s}\n\n", .{increment_kernel});
+    const ptx = try CuCompile.cudaText(increment_kernel, .{}, allocator);
+    defer allocator.free(ptx);
+
+    // Load the PTX module and obtain a handle to the "increment" function
+    const module = try CuDevice.loadPtxText(ptx);
+    const function = try module.getFunc("increment");
+    std.debug.print("Compiled Cuda Kernel that increments each value by 1 and loaded into GPU\n", .{});
+
+    // Phase 5: Launch the kernel — 1 block of 3 threads (one per element)
+    try function.run(
+        .{&cu_slice.device_ptr},
+        CuLaunchConfig{ .block_dim = .{ 3, 1, 1 }, .grid_dim = .{ 1, 1, 1 }, .shared_mem_bytes = 0 },
+    );
+    std.debug.print("Ran the Kernel against the array in GPU\n", .{});
+
+    // Phase 6: Synchronize the device and copy results back to host memory
+    var incremented_arr = try CuDevice.syncReclaim(f32, allocator, cu_slice);
+    defer incremented_arr.deinit(allocator);
+    std.debug.print("Retrieved incremented data {any} from GPU to system\n", .{incremented_arr.items});
+}
+```
+
+## Build Configuration
+
+The build script wires up the cudaz dependency, links the required system libraries, and creates a `run` step.
+
+```zig build.zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) !void {
+    // exe points to main.zig that uses cudaz
+    const exe = b.addExecutable(.{ .name = "main", .root_module = b.createModule(.{ .root_source_file = b.path("src/main.zig"), .target = b.standardTargetOptions(.{}) }) });
+
+    // Point to cudaz dependency
+    const cudaz_dep = b.dependency(
+        "cudaz",
+        .{}, // replace with `.{ .CUDA_PATH = @as([]const u8, "<your cuda path>") }` to specify custom CUDA_PATH
+    );
+
+    // Fetch and add the module from cudaz dependency
+    const cudaz_module = cudaz_dep.module("cudaz");
+    exe.root_module.addImport("cudaz", cudaz_module);
+
+    // Dynamically link to libc, cuda, nvrtc
+    exe.root_module.link_libc = true;
+    exe.root_module.linkSystemLibrary("cuda", .{});
+    exe.root_module.linkSystemLibrary("nvrtc", .{});
+
+    // Run binary
+    const run = b.step("run", "Run the binary");
+    const run_step = b.addRunArtifact(exe);
+    run.dependOn(&run_step.step);
+}
+```
+
+<Note>
+  If your CUDA toolkit is not on the default system library path, pass a custom
+  path to the `cudaz` dependency: `.{ .CUDA_PATH = @as([]const u8,
+  "/usr/local/cuda") }`.
+</Note>
+
+## Running the Example
+
+Clone the repository and run the example with a single command:
+
+```bash
+git clone https://github.com/akhildevelops/cudaz.git
+cd cudaz/example/increment
+zig build run
+```
+
+## Expected Output
+
+```
+Initialized allocator
+Cuda device is setup
+Copied array { 1.2e0, 2.8e0, 1.23e-1 } from system to GPU
+Kernel program:
+extern "C" __global__ void increment(float *out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    out[i] = out[i] + 1;
+}
+
+Compiled Cuda Kernel that increments each value by 1 and loaded into GPU
+Ran the Kernel against the array in GPU
+Retrieved incremented data { 2.2e0, 3.8e0, 1.123e0 } from GPU to system
+```
+
+## Step-by-Step Walkthrough
+
+<Steps>
+  <Step title="Initialize allocator and device">
+    A `DebugAllocator` is created for all host-side heap allocations. `CuDevice.default()` selects GPU 0 and initializes the CUDA driver context. Both resources are cleaned up with `defer`.
+  </Step>
+
+  <Step title="Copy the host array to GPU with htodCopy">
+    `device.htodCopy(f32, &data)` allocates GPU memory exactly large enough to hold the slice, then performs a host-to-device DMA transfer in one call. The returned `cu_slice` holds the device pointer and the element count; call `cu_slice.free()` when done.
+  </Step>
+
+  <Step title="Compile the kernel inline with Compile.cudaText">
+    `CuCompile.cudaText(increment_kernel, .{}, allocator)` invokes NVRTC to JIT-compile the embedded `.cu` source string into a PTX binary at runtime. The second argument is a compile-options struct where you can enable fast-math flags and similar settings. The returned `ptx` slice is heap-allocated and must be freed after the module is loaded.
+  </Step>
+
+  <Step title="Load PTX and get a function handle">
+    `CuDevice.loadPtxText(ptx)` uploads the PTX to the driver, which translates it into GPU machine code for the attached hardware. `module.getFunc("increment")` looks up the exported kernel by name and returns a callable handle.
+  </Step>
+
+  <Step title="Launch the kernel with run()">
+    `function.run(.{&cu_slice.device_ptr}, cfg)` launches the kernel. The first argument is a tuple of kernel parameters — here a single pointer to the device buffer. The `LaunchConfig` specifies `block_dim = .{ 3, 1, 1 }` so that 3 threads run in a single block, one per array element.
+  </Step>
+
+  <Step title="Retrieve results with syncReclaim">
+    `CuDevice.syncReclaim(f32, allocator, cu_slice)` blocks until the GPU finishes, copies the device buffer back to a newly allocated host `ArrayList`, and frees the GPU memory. The resulting `incremented_arr.items` contains the modified values ready for use on the CPU.
+  </Step>
+</Steps>

@@ -1,97 +1,111 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "cudaz: CUDA GPU Library for Zig"
+sidebarTitle: "Home"
+description: "cudaz is a Zig library for interacting with NVIDIA GPUs. Allocate GPU memory, compile and run CUDA kernels, and generate random numbers — all from Zig."
 ---
 
-## Setting up
+cudaz gives Zig developers a high-level, type-safe interface to NVIDIA GPU programming via CUDA. It handles device initialization, memory management, runtime kernel compilation through NVRTC, and random number generation through cuRAND — with idiomatic Zig error handling throughout.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add cudaz to your Zig project with a single fetch command
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Allocate GPU memory and run your first CUDA kernel in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Complete reference for every public type and function
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Examples" icon="flask" href="/examples/increment-array">
+    Working examples for arrays, custom types, and matrix ops
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What cudaz provides
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="GPU Memory Management" icon="memory">
+    Type-safe `CudaSlice(T)` for allocating, copying, and freeing GPU buffers
+  </Card>
+  <Card title="Runtime Kernel Compilation" icon="bolt">
+    Compile `.cu` source or inline CUDA text to PTX at runtime using NVRTC
+  </Card>
+  <Card title="Kernel Execution" icon="play">
+    Load PTX modules and launch kernels with configurable grid/block dimensions
+  </Card>
+  <Card title="Random Number Generation" icon="shuffle">
+    Generate uniform random `f32` arrays on the GPU via cuRAND
+  </Card>
+  <Card title="Auto CUDA Detection" icon="magnifying-glass">
+    Automatically locates your CUDA installation on Linux and macOS
+  </Card>
+  <Card title="Typed Error Handling" icon="triangle-exclamation">
+    CUDA, NVRTC, and cuRAND errors surface as first-class Zig error values
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Quick example
 
-## Need inspiration?
+Run a CUDA kernel that increments every element of an array in parallel:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+```zig quickstart.zig
+const std = @import("std");
+const Cuda = @import("cudaz");
+
+const increment_kernel =
+    \\extern "C" __global__ void increment(float *out)
+    \\{
+    \\    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    \\    out[i] = out[i] + 1;
+    \\}
+;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize GPU 0
+    const device = try Cuda.Device.default();
+    defer device.deinit();
+
+    // Copy array to GPU
+    const data = [_]f32{ 1.2, 2.8, 0.123 };
+    const cu_slice = try device.htodCopy(f32, &data);
+    defer cu_slice.free();
+
+    // Compile and run kernel
+    const ptx = try Cuda.Compile.cudaText(increment_kernel, .{}, allocator);
+    defer allocator.free(ptx);
+    const module = try Cuda.Device.loadPtxText(ptx);
+    const function = try module.getFunc("increment");
+    try function.run(
+        .{&cu_slice.device_ptr},
+        Cuda.LaunchConfig{ .block_dim = .{ 3, 1, 1 }, .grid_dim = .{ 1, 1, 1 }, .shared_mem_bytes = 0 },
+    );
+
+    // Retrieve results
+    var result = try Cuda.Device.syncReclaim(f32, allocator, cu_slice);
+    defer result.deinit(allocator);
+    // result.items == [2.2, 3.8, 1.123]
+}
+```
+
+<Steps>
+  <Step title="Install cudaz">
+    Run `zig fetch --save https://github.com/akhildevelops/cudaz/archive/0.4.0.tar.gz` in your project directory.
+  </Step>
+  <Step title="Configure build.zig">
+    Add the cudaz module and link `cuda`, `nvrtc`, and `libc` in your `build.zig`.
+  </Step>
+  <Step title="Initialize a device">
+    Call `Cuda.Device.default()` to set up GPU 0 and get a `Device` handle.
+  </Step>
+  <Step title="Run a kernel">
+    Compile your CUDA source, load the PTX, and call `function.run()` with your data and a `LaunchConfig`.
+  </Step>
+</Steps>
+
+<Note>
+cudaz supports Linux and macOS. Windows is not currently supported.
+</Note>

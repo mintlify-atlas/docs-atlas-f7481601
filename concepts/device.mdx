@@ -1,0 +1,78 @@
+---
+title: "GPU Device Initialization and Management in cudaz"
+sidebarTitle: "Device"
+description: "Understand how cudaz initializes CUDA devices, manages primary contexts, and exposes GPU 0 or a specific GPU ordinal through the Device type."
+---
+
+The `Device` type is the entry point for every GPU operation in cudaz. It wraps three pieces of state together: a `CUdevice` handle representing the physical GPU, a `CUcontext` that holds the CUDA primary context for that GPU, and an `ordinal` field that records which GPU index was opened. All memory allocations, data transfers, PTX loading, and kernel launches are performed through a `Device` value, making it the single owner of your GPU session.
+
+## Device Initialization
+
+cudaz provides two constructor functions for creating a `Device`. Both return a `CudaError.Error!Device` and must be called with `try`.
+
+### `Device.default()`
+
+`Device.default()` initializes GPU 0 — the first available GPU on the system. Internally it delegates directly to `Device.new(0)`, so the behavior is identical. This is the right choice for single-GPU workloads.
+
+### `Device.new(gpu: u16)`
+
+`Device.new(gpu)` initializes the GPU identified by ordinal `gpu`. Pass `0` for the first GPU, `1` for the second, and so on. Under the hood, cudaz performs the full CUDA initialization sequence:
+
+1. `cuInit(0)` — initializes the CUDA driver.
+2. `cuDeviceGet` — obtains a `CUdevice` handle for the requested ordinal.
+3. `cuDevicePrimaryCtxRetain` — retains the primary context for the device.
+4. `cuCtxSetCurrent` — makes the primary context current on the calling thread.
+
+```zig
+const device = try Cuda.Device.default();
+defer device.deinit();
+```
+
+The `defer device.deinit()` line ensures that the primary context is always released when the enclosing scope exits, even if a later operation returns an error.
+
+## Device Cleanup
+
+`device.deinit()` calls `cuDevicePrimaryCtxRelease` to release the primary context. It is defined on a `*const Device` and panics if the release fails, so there is no error to handle at the call site. Always pair every device initialization with a deferred `deinit`:
+
+```zig
+const device = try Cuda.Device.new(0);
+defer device.deinit();
+// ... allocations and kernels ...
+```
+
+## The Primary Context Model
+
+cudaz uses CUDA **primary contexts** rather than manually created contexts. Every process shares exactly one primary context per device, and the driver manages its lifetime through a reference count. This means:
+
+- cudaz is safe to use alongside other CUDA libraries (cuBLAS, cuDNN, etc.) that also use the primary context.
+- You do not need to push or pop contexts manually.
+- `cuCtxSetCurrent` makes the primary context active on the calling thread immediately after it is retained.
+
+## Multi-GPU Support
+
+To open multiple GPUs, call `Device.new` once per ordinal. Each call retains a separate primary context and sets it current at the time of the call:
+
+```zig
+const gpu0 = try Cuda.Device.new(0);
+defer gpu0.deinit();
+
+const gpu1 = try Cuda.Device.new(1);
+defer gpu1.deinit();
+```
+
+Allocations and kernel launches performed through `gpu0` always execute on GPU 0, and those through `gpu1` on GPU 1, because each `Device` value stores its own context handle.
+
+## The `ordinal` Field
+
+Every `Device` value exposes the GPU index it was opened with through the `ordinal: u16` field:
+
+```zig
+const device = try Cuda.Device.new(2);
+std.debug.print("Running on GPU {d}\n", .{device.ordinal}); // prints: Running on GPU 2
+```
+
+This is useful when logging, routing work, or verifying which physical GPU a slice was allocated on.
+
+<Note>
+  cudaz supports Linux and macOS. Windows is not supported. Ensure the CUDA driver and NVRTC libraries are installed and discoverable at runtime before calling any `Device` function.
+</Note>

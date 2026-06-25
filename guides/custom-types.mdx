@@ -1,0 +1,103 @@
+---
+title: "Sending Custom Struct Types to the GPU with cudaz"
+sidebarTitle: "Custom Types"
+description: "Transfer arrays of C-compatible structs from Zig to the GPU using CudaSlice(T) with a custom type. Requires a C header shared between Zig and CUDA kernels."
+---
+
+`CudaSlice(T)` is fully generic—`T` can be any C-compatible struct, not just primitives like `f32` or `i32`. This lets you move arrays of rich data types (coordinates, colors, records) to the GPU in a single `htodCopy` call, operate on them in a CUDA kernel, and retrieve the results with `syncReclaim`. The key requirement is that the struct layout is identical on both sides of the language boundary, which means defining it in a shared C header and then importing that header into both Zig and the CUDA source.
+
+## Defining the Shared C Type
+
+Place your struct in a plain C header file that lives alongside your project source. Both Zig (via `@cImport`) and the CUDA kernel source will reference this definition, so naming it something neutral like `c/tuple.h` keeps it easy to find.
+
+```c c/tuple.h
+typedef struct
+{
+    float x;
+    float y;
+} tuple;
+```
+
+## Importing the Type in Zig
+
+Use `@cImport` and `@cInclude` to pull the header into Zig. The resulting namespace exposes the struct as `Ctype.tuple`, and its memory layout is guaranteed to match what the C compiler (and NVCC) expects.
+
+```zig
+const Ctype = @cImport(@cInclude("../c/tuple.h"));
+```
+
+## Allocating and Copying Custom Types to the GPU
+
+Once the type is imported, use it anywhere you would use a primitive with `CudaSlice`. Build a host-side `ArrayList`, populate it, then call `device.htodCopy` to allocate GPU memory and copy the data in one step.
+
+```zig
+var src_array = try std.ArrayList(Ctype.tuple).initCapacity(allocator, 10);
+defer src_array.deinit(allocator);
+for (0..10) |index| {
+    try src_array.append(allocator, .{
+        .x = @floatFromInt(index),
+        .y = @as(f32, @floatFromInt(index)) + std.math.pi,
+    });
+}
+const src_cu_slice = try device.htodCopy(Ctype.tuple, src_array.items);
+defer src_cu_slice.free();
+```
+
+`htodCopy` allocates `@sizeOf(Ctype.tuple) * src_array.items.len` bytes on the device, copies the host slice into that allocation, and returns a `CudaSlice(Ctype.tuple)` that you pass directly to your kernel.
+
+## Writing the CUDA Kernel
+
+Because NVRTC (the runtime compiler cudaz uses) does not support `#include` directives, you cannot simply include `tuple.h` from inside your `.cu` source string. Instead, redefine the struct inline at the top of the kernel source. The layout produced by NVRTC will be identical to the one in the header as long as the field order and types match.
+
+```cuda offset.cu
+// Redefine the struct inline instead of #include
+typedef struct
+{
+    float x;
+    float y;
+} tuple;
+
+extern "C" __global__ void offset(tuple *in, float *out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    out[i] = in[i].y - in[i].x;
+}
+```
+
+Compile this source (embedded with `@embedFile` or passed as a string) through `Cuda.Compile.cudaText`, then load the resulting PTX:
+
+```zig
+const increment_kernel = @embedFile("offset.cu");
+const ptx = try Cuda.Compile.cudaText(increment_kernel, .{}, allocator);
+defer allocator.free(ptx);
+const module = try Cuda.Device.loadPtxText(ptx);
+const function = try module.getFunc("offset");
+```
+
+## Running the Kernel
+
+Allocate the output buffer on the device, then call `function.run` with a tuple of pointers to each kernel argument's `device_ptr`. The `LaunchConfig` controls grid and block dimensions.
+
+```zig
+const dest_cu_slice = try device.alloc(f32, 10);
+try function.run(
+    .{ &src_cu_slice.device_ptr, &dest_cu_slice.device_ptr },
+    Cuda.LaunchConfig{ .block_dim = .{ 10, 1, 1 }, .grid_dim = .{ 1, 1, 1 }, .shared_mem_bytes = 0 },
+);
+```
+
+After the kernel finishes, copy the results back to the host with `Device.syncReclaim`:
+
+```zig
+var incremented_arr = try Cuda.Device.syncReclaim(f32, allocator, dest_cu_slice);
+defer incremented_arr.deinit(allocator);
+// incremented_arr.items contains the y - x offsets computed on the GPU
+```
+
+<Warning>
+  NVRTC (runtime compilation) does not support `#include` directives. Any custom types referenced inside a CUDA source string must be redefined inline rather than pulled in from an external header.
+</Warning>
+
+<Tip>
+  Struct layout must match exactly between Zig and CUDA. If you define your struct purely in Zig rather than via `@cImport`, use `extern struct` to guarantee C-compatible field ordering and no padding surprises.
+</Tip>

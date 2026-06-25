@@ -1,0 +1,124 @@
+---
+title: "Rng API Reference — GPU Random Number Generation"
+sidebarTitle: "Rng"
+description: "Reference for cudaz's Rng type backed by cuRAND. Create generators with default() or init(), and generate uniform random f32 arrays with genrandom()."
+---
+
+`Rng` provides GPU-accelerated random number generation backed by the cuRAND library. It wraps a `curandGenerator_t` handle and a `Device`, exposing a simple interface for seeding the generator and producing arrays of uniform random `f32` values entirely on the GPU. Generation is performed by `curandGenerateUniform`, which fills a device-side buffer without any host involvement in the sampling loop.
+
+## Import
+
+```zig
+const CuRng = @import("cudaz").Rng;
+```
+
+---
+
+## Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `rng` | `curandGenerator_t` | The underlying cuRAND generator handle |
+| `device` | `Device` | The device associated with this generator |
+
+---
+
+## Functions
+
+### `default`
+
+```zig
+pub fn default() !Rng
+```
+
+Creates an `Rng` on GPU 0 with seed `0`. Uses the `CURAND_RNG_PSEUDO_DEFAULT` generator algorithm (a high-quality pseudo-random generator chosen by cuRAND). Internally calls `Device.default()` to initialize the device.
+
+**Returns:** `!Rng`
+
+```zig
+const rng = try CuRng.default();
+const slice = try rng.genrandom(512);
+defer slice.free();
+```
+
+---
+
+### `init`
+
+```zig
+pub fn init(device: Device, seed: ?u64) !Rng
+```
+
+Creates an `Rng` on a specific device with a given seed. Pass `null` for `seed` to use the default seed of `0`. Uses `CURAND_RNG_PSEUDO_DEFAULT` for the generator type, same as `default`.
+
+<ParamField path="device" type="Device" required>
+  An already-initialized `Device` on which the RNG will operate. The generator uses the current context of this device.
+</ParamField>
+<ParamField path="seed" type="?u64">
+  The 64-bit seed for the pseudo-random sequence. Pass `null` to use `0`. Different seeds produce independent random sequences; the same seed always produces the same sequence.
+</ParamField>
+
+**Returns:** `!Rng`
+
+```zig
+const device = try Cuda.Device.default();
+defer device.deinit();
+
+const rng = try CuRng.init(device, 42);
+```
+
+---
+
+### `genrandom`
+
+```zig
+pub fn genrandom(self: Rng, size: usize) !CudaSlice(f32)
+```
+
+Generates `size` uniform random `f32` values in the half-open interval `[0, 1)` entirely on the GPU using `curandGenerateUniform`. Allocates a `CudaSlice(f32)` to hold the output; the caller owns the returned slice and must call `slice.free()` when done.
+
+<ParamField path="self" type="Rng" required>
+  The initialized RNG to sample from. Each call advances the generator's internal state.
+</ParamField>
+<ParamField path="size" type="usize" required>
+  Number of random `f32` values to generate. Must be even (cuRAND requirement for some generator types).
+</ParamField>
+
+**Returns:** `!CudaSlice(f32)`
+
+---
+
+## Example
+
+```zig
+const std = @import("std");
+const Cuda = @import("cudaz");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const device = try Cuda.Device.default();
+    defer device.deinit();
+
+    const rng = try Cuda.Rng.init(device, 12345);
+    const slice = try rng.genrandom(1000);
+    defer slice.free();
+
+    var arr = try Cuda.Device.syncReclaim(f32, allocator, slice);
+    defer arr.deinit();
+    // arr.items contains 1000 uniform random f32 values in [0, 1)
+
+    std.debug.print("first value: {d}\n", .{arr.items[0]});
+}
+```
+
+<Note>
+The `curand` system library must be linked in your `build.zig` for `Rng` to work:
+
+```zig
+exe.root_module.linkSystemLibrary("curand", .{});
+```
+
+Without this, compilation will fail with an undefined symbol error for `curandCreateGenerator`.
+</Note>

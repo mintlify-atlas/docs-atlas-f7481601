@@ -1,0 +1,107 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "cudaz",
+  "projectDescription": "A Zig library that provides a high-level interface for interacting with NVIDIA GPUs via CUDA, enabling GPU memory management, kernel compilation and execution, and random number generation.",
+  "theme": "aspen",
+  "primaryColor": "#76B900",
+  "lightColor": "#A8D400",
+  "darkColor": "#4A7A00",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/device",
+              "concepts/memory",
+              "concepts/kernels",
+              "concepts/launch-config"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/compiling-kernels",
+              "guides/custom-types",
+              "guides/random-numbers",
+              "guides/error-handling"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/increment-array",
+              "examples/custom-type",
+              "examples/matrix-multiply"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API",
+            "pages": [
+              "api/overview",
+              "api/device",
+              "api/cudaSlice",
+              "api/compile",
+              "api/module-function",
+              "api/launch-config",
+              "api/rng"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "GPU device initialization and management",
+    "Type-safe GPU memory allocation (CudaSlice)",
+    "Host-to-device and device-to-host memory transfers",
+    "Runtime CUDA kernel compilation from text or file via NVRTC",
+    "PTX module loading and kernel function execution",
+    "Configurable grid/block/thread launch configuration",
+    "GPU random number generation via cuRAND",
+    "Automatic CUDA installation detection on Linux/macOS",
+    "Support for custom C/struct types on the GPU",
+    "Runtime and compile-time error handling with typed Zig errors"
+  ],
+  "publicApiSurface": [
+    "Device.default() — initialize GPU 0",
+    "Device.new(gpu: u16) — initialize specific GPU",
+    "Device.alloc(T, length) — allocate typed GPU memory",
+    "Device.allocZeros(T, length) — allocate zero-initialized GPU memory",
+    "Device.htodCopy(T, src) — copy slice from host to GPU",
+    "Device.htodCopyInto(T, src, dst) — copy into existing GPU slice",
+    "Device.dtohCopy(T, allocator, slice) — copy GPU slice to host",
+    "Device.syncReclaim(T, allocator, slice) — copy GPU slice to ArrayList",
+    "Device.loadPtx(file_path) — load PTX module from file",
+    "Device.loadPtxText(ptx) — load PTX module from text",
+    "Device.deinit() — release GPU context",
+    "CudaSlice(T).clone() — clone GPU buffer",
+    "CudaSlice(T).free() — free GPU buffer",
+    "Module.getFunc(name) — retrieve kernel function from module",
+    "Function.run(params, LaunchConfig) — launch CUDA kernel",
+    "LaunchConfig{ grid_dim, block_dim, shared_mem_bytes }",
+    "LaunchConfig.for_num_elems(n) — auto-configure for N elements",
+    "Compile.cudaText(src, options, allocator) — compile CUDA source to PTX",
+    "Compile.cudaFile(file, io, options, allocator) — compile CUDA file to PTX",
+    "Rng.default() — create RNG on GPU 0 with default seed",
+    "Rng.init(device, seed) — create RNG with specific device and seed",
+    "Rng.genrandom(size) — generate uniform random f32 values on GPU",
+    "CudaSliceR — runtime-typed GPU slice for dynamic dispatch",
+    "DType — enum of supported element types (f16, f32)"
+  ]
+}

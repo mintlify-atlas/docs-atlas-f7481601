@@ -1,0 +1,100 @@
+---
+title: "Compile CUDA Kernels at Runtime with NVRTC"
+sidebarTitle: "Compiling Kernels"
+description: "Use cudaz's Compile module to transform CUDA C source—inline strings or .cu files—into PTX at runtime using NVIDIA's NVRTC compiler."
+---
+
+cudaz supports two approaches to loading GPU kernels: compiling CUDA C source code at runtime using NVIDIA's NVRTC library, and loading pre-compiled PTX directly. Runtime compilation via `Cuda.Compile` lets you embed kernel source in your Zig program or read it from a `.cu` file, compile it on the fly, and load the resulting PTX into the active CUDA context—no offline `nvcc` step required.
+
+## Compile from Inline Text
+
+The most straightforward path is to embed your CUDA C source as a Zig string literal and pass it to `Cuda.Compile.cudaText`. The function returns a sentinel-terminated PTX string that you load with `Device.loadPtxText`.
+
+```zig
+const kernel_src =
+    \\extern "C" __global__ void add(float *a, float *b, float *c) {
+    \\    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    \\    c[i] = a[i] + b[i];
+    \\}
+;
+const ptx = try Cuda.Compile.cudaText(kernel_src, .{}, allocator);
+defer allocator.free(ptx);
+```
+
+You can also use `@embedFile` to pull a `.cu` file into your binary at compile time and pass the resulting slice directly to `cudaText`, which is the pattern used in the custom-type example.
+
+## Compile from a File
+
+When you want to read a `.cu` file at runtime rather than embed it, use `Cuda.Compile.cudaFile`. It accepts a `std.Io.File` handle and an `std.Io` instance, reads up to 1 MiB of source, and delegates to `cudaText` internally.
+
+```zig
+const io = ...; // std.Io handle
+const file = try std.Io.Dir.cwd().openFile(io, "src/kernel.cu", .{});
+defer file.close(io);
+const ptx = try Cuda.Compile.cudaFile(file, io, .{}, allocator);
+defer allocator.free(ptx);
+```
+
+## Compile Options
+
+Both `cudaText` and `cudaFile` accept an optional `Options` struct as their second argument. When `null` or `.{}` is passed, all fields default to their zero values and NVRTC uses its built-in defaults.
+
+| Field | Type | NVRTC flag | Description |
+|---|---|---|---|
+| `ftz` | `?bool` | `--ftz=true/false` | Flush denormal values to zero. |
+| `prec_sqrt` | `?bool` | `--prec-sqrt=true/false` | Use IEEE-compliant square root. |
+| `prec_div` | `?bool` | `--prec-div=true/false` | Use IEEE-compliant division. |
+| `use_fast_math` | `?bool` | `--fmad=true/false` | Enable fused multiply-add fast math. |
+| `maxrregcount` | `?usize` | `--maxrregcount=N` | Cap the number of registers per thread. |
+| `include_paths` | `[][]const u8` | `--include-path=…` | Additional directories to search for headers. |
+| `arch` | `[][]const u8` | `-arch=…` | Target GPU virtual architectures (e.g. `compute_86`). |
+| `macro` | `[][]const u8` | `--define-macro=…` | Preprocessor macro definitions. |
+
+Pass only the fields you need—any field left as `null` or an empty slice is simply omitted from the NVRTC command line:
+
+```zig
+const ptx = try Cuda.Compile.cudaText(src, .{
+    .use_fast_math = true,
+    .arch = &[_][]const u8{"compute_86"},
+}, allocator);
+```
+
+## Loading Pre-compiled PTX
+
+If you already have PTX output from an offline `nvcc` invocation, you can skip runtime compilation entirely and load the PTX directly via the `Device` module.
+
+**From an in-memory slice** (e.g., produced by `cudaText` or embedded with `@embedFile`):
+
+```zig
+const module = try Cuda.Device.loadPtxText(ptx);
+const function = try module.getFunc("my_kernel");
+```
+
+**From a PTX file on disk** (the path must be null-terminated):
+
+```zig
+const module = try Cuda.Device.loadPtx(.{ .raw_path = "kernel.ptx" });
+const function = try module.getFunc("my_kernel");
+```
+
+Both functions return a `Module` from which you retrieve individual kernel functions by name using `module.getFunc`.
+
+## Compilation Error Handling
+
+NVRTC errors surface as Zig error values from the `NvrtcError.Error` error set. When the source code itself is invalid—missing semicolons, type errors, and so on—NVRTC returns `NVRTC_ERROR_COMPILATION`. cudaz intercepts that specific error, fetches the compiler log with `nvrtcGetProgramLog`, prints it to `stderr`, and then returns the error so normal Zig `try`/`catch` flows continue to work.
+
+```zig
+const ptx = Cuda.Compile.cudaText(bad_src, .{}, allocator) catch |err| switch (err) {
+    error.NVRTC_ERROR_COMPILATION => {
+        // Compiler log has already been printed to stderr.
+        return err;
+    },
+    else => return err,
+};
+```
+
+For all other NVRTC errors (out-of-memory, invalid input, etc.) the error is returned directly without printing a log.
+
+<Note>
+  The PTX returned by `cudaText` and `cudaFile` is a sentinel-terminated `[:0]const u8`. You are responsible for freeing it with `allocator.free(ptx)` once the corresponding `Module` has been loaded—the module retains its own copy of the code inside the CUDA driver.
+</Note>

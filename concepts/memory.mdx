@@ -1,0 +1,145 @@
+---
+title: "GPU Memory Management with CudaSlice"
+sidebarTitle: "Memory"
+description: "Learn how cudaz manages GPU memory through CudaSlice(T), a type-safe buffer handle supporting allocation, zeroing, cloning, and host-device transfers."
+---
+
+cudaz provides two GPU buffer types: `CudaSlice(T)` and `CudaSliceR`. `CudaSlice(T)` is a generic, comptime-typed slice — `T` is fixed at compile time, giving you type-safe access to GPU memory. `CudaSliceR` is the runtime-typed counterpart backed by the `DType` enum, useful when the element type is only known at runtime (for example, when dispatching over f16 or f32 based on user input). Both types hold a `device_ptr` (a `CUdeviceptr`), a `len`, and a reference back to the originating `Device`.
+
+## `CudaSlice(T)`
+
+### Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `device_ptr` | `cuda.CUdeviceptr` | The raw GPU device pointer |
+| `len` | `usize` | Number of elements of type `T` |
+| `device` | `Device` | The device that owns this allocation |
+
+### Allocation
+
+**`device.alloc(T, length)`** allocates uninitialized GPU memory for `length` elements of type `T`. The memory contents are undefined until written.
+
+**`device.allocZeros(T, length)`** allocates GPU memory for `length` elements and zeroes every byte using `cuMemsetD8_v2`. Use this when you need a known-zero starting state.
+
+```zig
+const slice = try device.alloc(f32, 1024);
+defer slice.free();
+
+const zeroed = try device.allocZeros(u32, 512);
+defer zeroed.free();
+```
+
+### Freeing Memory
+
+**`cu_slice.free()`** calls `cuMemFree_v2` on the underlying device pointer and panics on failure. Always release allocations when they are no longer needed. The `defer` pattern is the safest way to do this:
+
+```zig
+const slice = try device.alloc(f32, 1024);
+defer slice.free();
+```
+
+### Cloning
+
+**`cu_slice.clone()`** performs a device-to-device copy and returns a new, independently owned `CudaSlice(T)` of the same length. The original slice is not modified. Both the original and the clone must be freed separately:
+
+```zig
+const slice = try device.alloc(f32, 1024);
+defer slice.free();
+
+const copy = try slice.clone();
+defer copy.free();
+```
+
+## Host-to-Device Transfers
+
+### `device.htodCopy(T, src_slice)`
+
+Allocates a new GPU buffer of the same length as `src_slice` and copies the host data into it in one call. This is the most convenient way to move a host slice to the GPU:
+
+```zig
+const data = [_]f32{ 1.0, 2.0, 3.0 };
+const cu = try device.htodCopy(f32, &data);
+defer cu.free();
+```
+
+### `Device.htodCopyInto(T, src, dst)`
+
+Copies from a host slice `src` into an already-allocated `CudaSlice(T)` `dst`. The lengths of `src` and `dst` must be equal — an assertion failure is triggered at runtime if they differ. Use this when you want to reuse an existing GPU buffer:
+
+```zig
+const buf = try device.alloc(f32, data.len);
+defer buf.free();
+
+try Cuda.Device.htodCopyInto(f32, &data, buf);
+```
+
+## Device-to-Host Transfers
+
+### `Device.dtohCopy(T, allocator, slice)`
+
+Copies GPU memory into a freshly allocated host slice `[]T`. The caller owns the returned slice and must free it with the same allocator:
+
+```zig
+const host = try Cuda.Device.dtohCopy(f32, allocator, cu_slice);
+defer allocator.free(host);
+```
+
+### `Device.syncReclaim(T, allocator, slice)`
+
+Copies GPU memory into a `std.ArrayList(T)`. The caller owns the returned list. This is convenient when you need the result as a resizable list rather than a plain slice:
+
+```zig
+var result = try Cuda.Device.syncReclaim(f32, allocator, cu_slice);
+defer result.deinit();
+
+for (result.items) |val| {
+    std.debug.print("{d}\n", .{val});
+}
+```
+
+## `CudaSliceR` — Runtime-Typed Buffers
+
+`CudaSliceR` is used when the element type is determined at runtime. It carries an `element_type: DType` field alongside `device_ptr`, `len`, and `device`.
+
+The `DType` enum currently supports two variants:
+
+| Variant | Zig type | Size |
+|---|---|---|
+| `.f16` | `f16` | 2 bytes |
+| `.f32` | `f32` | 4 bytes |
+
+The allocation API mirrors the typed variants:
+
+```zig
+// Allocate uninitialized runtime-typed buffer
+const rslice = try device.allocR(.f32, 1024);
+defer rslice.free();
+
+// Allocate zeroed runtime-typed buffer
+const rzeroed = try device.allocZerosR(.f16, 512);
+defer rzeroed.free();
+```
+
+To copy a `CudaSliceR` back to the host, use `Device.syncReclaimR`, providing the concrete Zig type as a comptime parameter:
+
+```zig
+var result = try Cuda.Device.syncReclaimR(f32, allocator, rslice);
+defer result.deinit();
+```
+
+`CudaSliceR` also supports `.clone()`, which performs a device-to-device copy and returns a new `CudaSliceR` with the same `element_type`.
+
+## Memory Ownership
+
+cudaz does not use any automatic reference counting. Every `CudaSlice(T)` or `CudaSliceR` that you allocate must be explicitly freed. The idiomatic pattern is to call `.free()` via `defer` immediately after allocation:
+
+```zig
+const a = try device.alloc(f32, n);
+defer a.free();
+
+const b = try a.clone();
+defer b.free();
+```
+
+Both `a` and `b` are independently owned and must each be freed. Forgetting to free either one leaks GPU memory for the lifetime of the process.

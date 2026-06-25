@@ -1,0 +1,52 @@
+---
+title: "cudaz: High-Level CUDA GPU Library for Zig"
+sidebarTitle: "Introduction"
+description: "cudaz is a Zig library for NVIDIA GPU programming. It provides device management, type-safe memory, kernel compilation, and random number generation."
+---
+
+cudaz is a Zig library that lets you harness NVIDIA GPU hardware directly from Zig programs. Instead of wrestling with raw CUDA C APIs, cudaz exposes a clean, idiomatic Zig interface that handles device initialization, memory transfers, kernel compilation, and result retrieval — so you can focus on writing the GPU logic that makes your application fast.
+
+<CardGroup cols={2}>
+  <Card title="GPU Device Management" icon="microchip" href="/concepts/device">
+    Initialize CUDA devices by ordinal or grab the default GPU with a single call. Manage device lifetimes safely using Zig's `defer` pattern.
+  </Card>
+  <Card title="Type-Safe GPU Memory" icon="memory" href="/concepts/memory">
+    `CudaSlice(T)` wraps device pointers with compile-time type information, preventing entire classes of pointer and size mismatch bugs.
+  </Card>
+  <Card title="NVRTC Kernel Compilation" icon="code" href="/concepts/kernels">
+    Compile CUDA C kernels from inline strings or `.cu` files at runtime using NVIDIA's NVRTC library — no separate `nvcc` build step required.
+  </Card>
+  <Card title="PTX Loading and Execution" icon="play" href="/concepts/kernels">
+    Load pre-compiled PTX assembly from text or a file path, then launch functions with full control over grid dimensions, block dimensions, and shared memory.
+  </Card>
+  <Card title="cuRAND Random Number Generation" icon="dice" href="/guides/random-numbers">
+    Generate random numbers directly on the GPU using NVIDIA's cuRAND library, without copying seed data back and forth between host and device.
+  </Card>
+  <Card title="Automatic CUDA Path Detection" icon="magnifying-glass" href="/installation">
+    cudaz scans standard installation directories (`/usr`, `/usr/local/cuda`, `/opt/cuda`, `/usr/lib/cuda`) so your builds work out of the box on most Linux and macOS setups.
+  </Card>
+  <Card title="Custom C Struct Support" icon="puzzle-piece" href="/guides/custom-types">
+    Pass your own C-compatible structs to GPU kernels through `CAPI`, enabling complex data layouts beyond simple numeric arrays.
+  </Card>
+  <Card title="Typed Error Handling" icon="triangle-exclamation" href="/guides/error-handling">
+    CUDA and NVRTC error codes are mapped to Zig error unions (`CudaError`), giving you exhaustive, type-safe error handling at every GPU call site.
+  </Card>
+</CardGroup>
+
+## How it works
+
+A typical cudaz program follows a straightforward five-step workflow:
+
+1. **Device init** — call `CuDevice.default()` (or `CuDevice.new(ordinal)`) to initialize the CUDA runtime and acquire a primary context for your GPU.
+2. **Memory allocation** — use `device.htodCopy(T, &host_slice)` to allocate GPU memory and copy your data to the device in one step, receiving a `CudaSlice(T)` back.
+3. **Kernel compile** — write your CUDA C kernel as an inline Zig string (or embed a `.cu` file), then call `CuCompile.cudaText(source, .{}, allocator)` to produce PTX bytecode via NVRTC.
+4. **Kernel run** — load the PTX with `CuDevice.loadPtxText(ptx)`, look up your function by name with `module.getFunc("name")`, then launch it via `function.run(params, LaunchConfig{...})`.
+5. **Data retrieval** — call `CuDevice.syncReclaim(T, allocator, cu_slice)` to synchronize the device, copy results back to the host, and return them as a `std.ArrayList(T)`.
+
+<Note>
+  cudaz supports **Linux and macOS** only. Windows is explicitly not supported — the build system will return an error if you attempt to build on Windows.
+</Note>
+
+<Note>
+  cudaz was inspired by [cudarc](https://github.com/coreylowman/cudarc/tree/main), the high-level Rust CUDA library by Corey Lowman. If you are coming from a Rust background, many of the design patterns will feel familiar.
+</Note>
