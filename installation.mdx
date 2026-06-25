@@ -1,7 +1,7 @@
 ---
-title: "Installing cudaz in Your Zig Project"
+title: "Installing cudaz in Your Zig Project with zig fetch"
 sidebarTitle: "Installation"
-description: "Install cudaz using zig fetch for Zig 0.13 through 0.16. Configure build.zig to link CUDA, NVRTC, and add the cudaz module."
+description: "Install cudaz using zig fetch for Zig 0.13 through 0.16. Configure build.zig to link CUDA, NVRTC, and add the cudaz module to your executable."
 ---
 
 Before adding cudaz to your project, make sure you have two prerequisites in place: the **NVIDIA CUDA Toolkit** installed on your system (which provides the `cuda.h` header, and the `libcuda`, `libnvrtc` shared libraries), and a supported **Zig toolchain** (0.13.0 through 0.16.0). cudaz ships separate tagged releases for each Zig version, so you must fetch the correct archive for the compiler you are using.

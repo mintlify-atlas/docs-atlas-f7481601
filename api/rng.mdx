@@ -28,12 +28,12 @@ const CuRng = @import("cudaz").Rng;
 ### `default`
 
 ```zig
-pub fn default() !Rng
+pub fn default() !@This()
 ```
 
 Creates an `Rng` on GPU 0 with seed `0`. Uses the `CURAND_RNG_PSEUDO_DEFAULT` generator algorithm (a high-quality pseudo-random generator chosen by cuRAND). Internally calls `Device.default()` to initialize the device.
 
-**Returns:** `!Rng`
+**Returns:** `!@This()` (an initialized `Rng`)
 
 ```zig
 const rng = try CuRng.default();
@@ -46,7 +46,7 @@ defer slice.free();
 ### `init`
 
 ```zig
-pub fn init(device: Device, seed: ?u64) !Rng
+pub fn init(device: Device, seed: ?u64) !@This()
 ```
 
 Creates an `Rng` on a specific device with a given seed. Pass `null` for `seed` to use the default seed of `0`. Uses `CURAND_RNG_PSEUDO_DEFAULT` for the generator type, same as `default`.
@@ -58,7 +58,7 @@ Creates an `Rng` on a specific device with a given seed. Pass `null` for `seed` 
   The 64-bit seed for the pseudo-random sequence. Pass `null` to use `0`. Different seeds produce independent random sequences; the same seed always produces the same sequence.
 </ParamField>
 
-**Returns:** `!Rng`
+**Returns:** `!@This()` (an initialized `Rng`)
 
 ```zig
 const device = try Cuda.Device.default();
@@ -72,12 +72,12 @@ const rng = try CuRng.init(device, 42);
 ### `genrandom`
 
 ```zig
-pub fn genrandom(self: Rng, size: usize) !CudaSlice(f32)
+pub fn genrandom(self: @This(), size: usize) !CudaSlice(f32)
 ```
 
 Generates `size` uniform random `f32` values in the half-open interval `[0, 1)` entirely on the GPU using `curandGenerateUniform`. Allocates a `CudaSlice(f32)` to hold the output; the caller owns the returned slice and must call `slice.free()` when done.
 
-<ParamField path="self" type="Rng" required>
+<ParamField path="self" type="@This()" required>
   The initialized RNG to sample from. Each call advances the generator's internal state.
 </ParamField>
 <ParamField path="size" type="usize" required>

@@ -184,7 +184,7 @@ const options = CuCompile.Options{
 ## `CompileError`
 
 ```zig
-const CompileError = std.mem.Allocator.Error || NvrtcError.Error || error{StreamTooLong};
+const CompileError = std.mem.Allocator.Error || Error.NvrtcError.Error || error{StreamTooLong};
 ```
 
 The error union returned by compilation functions combines three sources:

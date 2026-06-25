@@ -108,22 +108,22 @@ defer slice.free();
 ### `allocZeros`
 
 ```zig
-pub fn allocZeros(self: Device, comptime T: type, length: usize) CudaError.Error!CudaSlice(T)
+pub fn allocZeros(self: Device, comptime data_type: type, length: usize) CudaError.Error!CudaSlice(data_type)
 ```
 
-Allocates GPU memory for `length` elements of type `T` and immediately zero-initializes every byte using `cuMemsetD8_v2`. Equivalent to `alloc` followed by `memsetZeros`.
+Allocates GPU memory for `length` elements of type `data_type` and immediately zero-initializes every byte using `cuMemsetD8_v2`. Equivalent to `alloc` followed by `memsetZeros`.
 
 <ParamField path="self" type="Device" required>
   The device on which to allocate memory.
 </ParamField>
-<ParamField path="T" type="type" required>
+<ParamField path="data_type" type="type" required>
   Comptime element type.
 </ParamField>
 <ParamField path="length" type="usize" required>
   Number of elements to allocate and zero.
 </ParamField>
 
-**Returns:** `CudaError.Error!CudaSlice(T)`
+**Returns:** `CudaError.Error!CudaSlice(data_type)`
 
 ```zig
 const zeros = try device.allocZeros(f32, 256);
@@ -241,7 +241,7 @@ try CuDevice.htodCopyInto(f32, &new_data, gpu_slice);
 ### `dtohCopy`
 
 ```zig
-pub fn dtohCopy(comptime T: type, allocator: Allocator, slice: CudaSlice(T)) ![]T
+pub fn dtohCopy(comptime T: type, allocator: std.mem.Allocator, slice: CudaSlice(T)) ![]T
 ```
 
 Allocates a host buffer with `allocator` and copies the contents of `slice` into it. The returned `[]T` is owned by the caller and must be freed with `allocator.free(...)`.
@@ -268,7 +268,7 @@ defer allocator.free(host_buf);
 ### `syncReclaim`
 
 ```zig
-pub fn syncReclaim(comptime T: type, allocator: Allocator, slice: CudaSlice(T)) !std.ArrayList(T)
+pub fn syncReclaim(comptime T: type, allocator: std.mem.Allocator, slice: CudaSlice(T)) !std.ArrayList(T)
 ```
 
 Copies the GPU slice to a newly-created `ArrayList(T)`. The returned `ArrayList` owns its memory; call `arr.deinit()` when done. This is a convenience wrapper around `dtohCopy` for callers that prefer `ArrayList`.
@@ -296,7 +296,7 @@ std.debug.print("first element: {d}\n", .{results.items[0]});
 ### `syncReclaimR`
 
 ```zig
-pub fn syncReclaimR(comptime T: type, allocator: Allocator, slice: CudaSliceR) !std.ArrayList(T)
+pub fn syncReclaimR(comptime T: type, allocator: std.mem.Allocator, slice: CudaSliceR) !std.ArrayList(T)
 ```
 
 Runtime-typed variant of `syncReclaim`. Copies a `CudaSliceR` to an `ArrayList(T)`. You must supply the concrete `T` at the call site; it must match the runtime `DType` stored in `slice.element_type`.
@@ -320,12 +320,12 @@ Runtime-typed variant of `syncReclaim`. Copies a `CudaSliceR` to an `ArrayList(T
 ### `loadPtx`
 
 ```zig
-pub fn loadPtx(file_path: PathBuffer) CudaError.Error!Module
+pub fn loadPtx(file_path: path.PathBuffer) CudaError.Error!Module
 ```
 
 Loads a PTX file from disk into a `CUmodule` using `cuModuleLoad`. The `PathBuffer` wraps a null-terminated path string.
 
-<ParamField path="file_path" type="PathBuffer" required>
+<ParamField path="file_path" type="path.PathBuffer" required>
   Null-terminated path to the `.ptx` file to load.
 </ParamField>
 
@@ -365,15 +365,15 @@ const func = try module.getFunc("my_kernel");
 ### `memsetZeros`
 
 ```zig
-pub fn memsetZeros(comptime T: type, cuda_slice: CudaSlice(T)) CudaError.Error!void
+pub fn memsetZeros(comptime data_type: type, cuda_slice: CudaSlice(data_type)) CudaError.Error!void
 ```
 
 Sets every byte of the GPU slice to zero using `cuMemsetD8_v2`. Useful for resetting a previously allocated buffer.
 
-<ParamField path="T" type="type" required>
+<ParamField path="data_type" type="type" required>
   Comptime element type of the slice.
 </ParamField>
-<ParamField path="cuda_slice" type="CudaSlice(T)" required>
+<ParamField path="cuda_slice" type="CudaSlice(data_type)" required>
   The GPU buffer to zero-fill.
 </ParamField>
 
@@ -381,6 +381,29 @@ Sets every byte of the GPU slice to zero using `cuMemsetD8_v2`. Useful for reset
 
 ```zig
 try CuDevice.memsetZeros(f32, my_slice);
+```
+
+---
+
+### `memsetZerosR`
+
+```zig
+pub fn memsetZerosR(dtype: DType, cuda_slice: CudaSliceR) CudaError.Error!void
+```
+
+Runtime-typed variant of `memsetZeros`. Sets every byte of a `CudaSliceR` to zero using `cuMemsetD8_v2`. The byte count is computed using `dtype.size() * cuda_slice.len`.
+
+<ParamField path="dtype" type="DType" required>
+  Runtime element type — `.f16` (2 bytes) or `.f32` (4 bytes).
+</ParamField>
+<ParamField path="cuda_slice" type="CudaSliceR" required>
+  The runtime-typed GPU buffer to zero-fill.
+</ParamField>
+
+**Returns:** `CudaError.Error!void`
+
+```zig
+try CuDevice.memsetZerosR(.f32, my_runtime_slice);
 ```
 
 ---

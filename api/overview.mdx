@@ -26,7 +26,7 @@ Every symbol described in this reference is accessed through this `Cuda` namespa
 | `Cuda.Function` | `struct` | A kernel function handle retrieved from a Module |
 | `Cuda.Rng` | `struct` | GPU random number generator backed by cuRAND |
 | `Cuda.CAPI` | `namespace` | Raw C API access (CUDA driver, NVRTC, cuRAND headers) |
-| `Cuda.CudaError` | `error union` | Combined error set covering CUDA driver and cuRAND error codes |
+| `Cuda.CudaError` | `type` | Combined error set covering CUDA driver and cuRAND error codes |
 
 <Note>
 `Cuda.CudaError` is defined as `CurandError.Error || NvrtcError.Error` — the full set of error codes that any cudaz function may return. Individual functions declare more specific subsets in their signatures.

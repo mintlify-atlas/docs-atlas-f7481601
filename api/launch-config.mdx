@@ -35,7 +35,7 @@ const CuLaunchConfig = @import("cudaz").LaunchConfig;
 ### `for_num_elems`
 
 ```zig
-pub fn for_num_elems(n: u32) LaunchConfig
+pub fn for_num_elems(n: u32) Self
 ```
 
 Computes a 1D launch configuration that covers exactly `n` elements using blocks of 1024 threads. The grid size is rounded up so that every element gets a thread, even if `n` is not a multiple of 1024.
@@ -44,7 +44,7 @@ Computes a 1D launch configuration that covers exactly `n` elements using blocks
   Total number of elements (threads) to cover. Must be greater than zero.
 </ParamField>
 
-**Returns:** `LaunchConfig`
+**Returns:** `Self` (`LaunchConfig`)
 
 **Formula:**
 

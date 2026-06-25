@@ -1,7 +1,7 @@
 ---
 title: "Example: Matrix Multiplication on the GPU with cudaz"
 sidebarTitle: "Matrix Multiply"
-description: "A 2D CUDA kernel example in cudaz that multiplies two square matrices on the GPU using a 2D block/grid launch configuration."
+description: "cudaz example compiling a 2D matmul CUDA kernel at runtime, launching it with a 2D block/grid config, and copying the result matrix back to the host."
 ---
 
 This example demonstrates a 2D launch configuration — the key step up from the 1D "one thread per element" model used in the increment example. A matrix multiplication kernel assigns one output cell `C[ROW][COL]` to each thread in a 2D block, so the grid and block dimensions map directly onto the rows and columns of the matrix. The kernel and test are taken from the cudaz test suite (`test/general.zig`) and adapted here as a standalone program.
@@ -55,7 +55,7 @@ const cuda_src =
 ;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

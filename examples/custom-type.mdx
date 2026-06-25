@@ -1,5 +1,5 @@
 ---
-title: "Example: Send Custom Struct Types to the GPU"
+title: "Example: Pass Custom C Struct Arrays to the GPU with cudaz"
 sidebarTitle: "Custom Type"
 description: "cudaz example showing how to transfer arrays of C-compatible structs to the GPU and process them with a CUDA kernel that computes field offsets."
 ---
@@ -122,6 +122,7 @@ pub fn main() !void {
   <Step title="Create an ArrayList of tuples and fill it">
     ```zig
     var src_array = try std.ArrayList(Ctype.tuple).initCapacity(allocator, 10);
+    defer src_array.deinit(allocator);
     for (0..10) |index| {
         try src_array.append(allocator, .{
             .x = @floatFromInt(index),

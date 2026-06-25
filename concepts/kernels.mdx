@@ -1,5 +1,5 @@
 ---
-title: "CUDA Kernel Compilation and Execution in cudaz"
+title: "CUDA Kernel Compilation, Loading, and Execution in cudaz"
 sidebarTitle: "Kernels"
 description: "Learn how cudaz compiles CUDA C source to PTX at runtime using NVRTC, loads PTX modules, retrieves kernel functions, and executes them on the GPU."
 ---
@@ -20,7 +20,7 @@ The `Compile` module wraps NVRTC (NVIDIA Runtime Compilation) and turns CUDA C s
 
 ### `Compile.cudaText(cuda_src, options, allocator)`
 
-Compiles an inline CUDA C string. Pass `null` or `.{}` for `options` to use defaults:
+Compiles an inline CUDA C string. Pass `null` for `options` to use NVRTC defaults:
 
 ```zig
 const kernel_source =
@@ -30,16 +30,17 @@ const kernel_source =
     \\}
 ;
 
-const ptx = try Cuda.Compile.cudaText(kernel_source, .{}, allocator);
+const ptx = try Cuda.Compile.cudaText(kernel_source, null, allocator);
 defer allocator.free(ptx);
 ```
 
 ### `Compile.cudaFile(file, io, options, allocator)`
 
-Compiles a `.cu` file from disk. The file is read into a 1 MB buffer, null-terminated, and then passed to `cudaText` internally:
+Compiles a `.cu` file from disk. The file is read into a 1 MB buffer, null-terminated, and then passed to `cudaText` internally. The `io` value is a `std.Io` handle obtained from your program's startup context:
 
 ```zig
 const file = try std.fs.cwd().openFile("kernels/add.cu", .{});
+const io = std.io.getStdIo();
 const ptx = try Cuda.Compile.cudaFile(file, io, null, allocator);
 defer allocator.free(ptx);
 ```

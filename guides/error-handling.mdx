@@ -22,7 +22,7 @@ The top-level `lib.zig` re-exports a combined union type:
 pub const CudaError = Error.CurandError.Error || Error.NvrtcError.Error;
 ```
 
-This `Cuda.CudaError` union is useful when a function can return errors from multiple subsystems and you want a single catch-all type.
+`Cuda.CudaError` is the union of **cuRAND and NVRTC errors only**. It does not include CUDA driver errors (`CUDA_ERROR_*`), which are accessed internally as `Error.CudaError.Error`. Use `Cuda.CudaError` when you want a single type that covers both compiler and RNG failures.
 
 ## How Errors Are Generated
 
@@ -45,7 +45,7 @@ These originate from `NvrtcError.Error` and arise from `Compile.cudaText`, `Comp
 
 | Error | Typical cause |
 |---|---|
-| `NVRTC_ERROR_COMPILATION` | The CUDA C source contained syntax or type errors. cudaz prints the full compiler log to `stderr` before returning this error. |
+| `NVRTC_ERROR_COMPILATION` | The CUDA C source contained syntax or type errors. cudaz prints the full compiler log to `stderr`, then a subsequent NVRTC error is returned when PTX retrieval fails. |
 | `NVRTC_ERROR_OUT_OF_MEMORY` | The NVRTC compiler ran out of host memory during compilation. |
 
 ## Common cuRAND Errors
@@ -77,15 +77,13 @@ For operations deeper in a call stack, `try` is usually sufficient—errors prop
 
 ## Compilation Error Log
 
-When `Compile.cudaText` or `Compile.cudaFile` encounters an `NVRTC_ERROR_COMPILATION`, cudaz performs extra work before returning the error: it calls `nvrtcGetProgramLogSize` and `nvrtcGetProgramLog` to retrieve the full diagnostics string, prints it to `stderr` with `std.debug.print`, and then frees the log buffer. This means you see the precise line numbers and error messages from the NVRTC compiler in your terminal without any additional setup.
+When `Compile.cudaText` or `Compile.cudaFile` encounters an `NVRTC_ERROR_COMPILATION`, cudaz performs extra work inside `cudaProgram` before continuing: it calls `nvrtcGetProgramLogSize` and `nvrtcGetProgramLog` to retrieve the full diagnostics string, prints it to `stderr` with `std.debug.print`, and then frees the log buffer. After printing, `cudaProgram` returns normally, and the subsequent `getPtx` call will fail with its own NVRTC error because no PTX was produced. This means you see the precise line numbers and error messages from the NVRTC compiler in your terminal without any additional setup.
 
 ```zig
-const ptx = Cuda.Compile.cudaText(bad_src, .{}, allocator) catch |err| switch (err) {
-    error.NVRTC_ERROR_COMPILATION => {
-        // The compiler log (line numbers, messages) is already on stderr.
-        return err;
-    },
-    else => return err,
+const ptx = Cuda.Compile.cudaText(bad_src, .{}, allocator) catch |err| {
+    // The compiler log (line numbers, messages) is already on stderr.
+    std.debug.print("Compilation failed: {s}\n", .{@errorName(err)});
+    return err;
 };
 ```
 

@@ -1,5 +1,5 @@
 ---
-title: "Compile CUDA Kernels at Runtime with NVRTC"
+title: "Compile CUDA Kernels at Runtime Using NVRTC in cudaz"
 sidebarTitle: "Compiling Kernels"
 description: "Use cudaz's Compile module to transform CUDA C source—inline strings or .cu files—into PTX at runtime using NVIDIA's NVRTC compiler."
 ---
@@ -81,19 +81,15 @@ Both functions return a `Module` from which you retrieve individual kernel funct
 
 ## Compilation Error Handling
 
-NVRTC errors surface as Zig error values from the `NvrtcError.Error` error set. When the source code itself is invalid—missing semicolons, type errors, and so on—NVRTC returns `NVRTC_ERROR_COMPILATION`. cudaz intercepts that specific error, fetches the compiler log with `nvrtcGetProgramLog`, prints it to `stderr`, and then returns the error so normal Zig `try`/`catch` flows continue to work.
+NVRTC errors surface as Zig error values from the `NvrtcError.Error` error set. When the source code itself is invalid—missing semicolons, type errors, and so on—NVRTC returns `NVRTC_ERROR_COMPILATION`. cudaz intercepts that specific error inside `cudaProgram`, fetches the compiler log with `nvrtcGetProgramLog`, and prints it to `stderr`. After printing, `cudaProgram` returns normally, and the subsequent call to `getPtx` will return its own NVRTC error because no valid PTX was produced. All other NVRTC errors (out-of-memory, invalid input, etc.) are returned directly without printing a log.
 
 ```zig
-const ptx = Cuda.Compile.cudaText(bad_src, .{}, allocator) catch |err| switch (err) {
-    error.NVRTC_ERROR_COMPILATION => {
-        // Compiler log has already been printed to stderr.
-        return err;
-    },
-    else => return err,
+const ptx = Cuda.Compile.cudaText(bad_src, .{}, allocator) catch |err| {
+    // Compiler log has already been printed to stderr if source was invalid.
+    std.debug.print("Compilation failed: {s}\n", .{@errorName(err)});
+    return err;
 };
 ```
-
-For all other NVRTC errors (out-of-memory, invalid input, etc.) the error is returned directly without printing a log.
 
 <Note>
   The PTX returned by `cudaText` and `cudaFile` is a sentinel-terminated `[:0]const u8`. You are responsible for freeing it with `allocator.free(ptx)` once the corresponding `Module` has been loaded—the module retains its own copy of the code inside the CUDA driver.

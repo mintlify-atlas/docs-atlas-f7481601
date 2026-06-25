@@ -1,7 +1,7 @@
 ---
-title: "Configuring CUDA Kernel Launch Parameters"
+title: "Configuring CUDA Kernel Launch Parameters in cudaz"
 sidebarTitle: "Launch Config"
-description: "LaunchConfig controls the CUDA kernel grid and block dimensions. Use for_num_elems() for 1D data or set grid_dim and block_dim manually for 2D and 3D layouts."
+description: "LaunchConfig controls the CUDA kernel grid and block dimensions. Use for_num_elems() for 1D workloads or set grid_dim and block_dim for 2D and 3D layouts."
 ---
 
 Every CUDA kernel launch requires a **grid configuration** that tells the GPU how many thread blocks to create and how many threads to place in each block. cudaz captures this through the `LaunchConfig` struct, which is passed as the second argument to `function.run(params, cfg)`. Getting the configuration right is important: too few threads leave the GPU underutilised, while an incorrectly sized grid causes out-of-bounds memory accesses or silently drops elements at the end of an array.

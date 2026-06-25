@@ -19,12 +19,17 @@ cudaz provides two complementary GPU buffer types. `CudaSlice(T)` is a generic, 
 | `device_ptr` | `cuda.CUdeviceptr` | Opaque handle to the GPU memory region |
 | `len` | `usize` | Number of elements (not bytes) in the buffer |
 | `device` | `Device` | The `Device` on which this memory was allocated |
-| `element_type` | `type` *(comptime)* | The element type `T`; accessible as `MySlice.element_type` |
+
+### Comptime Constants
+
+| Constant | Type | Description |
+|---|---|---|
+| `element_type` | `type` | Comptime constant equal to `T`; accessible as `CudaSlice(T).element_type` via `pub const element_type: type = T` |
 
 ### `clone`
 
 ```zig
-pub fn clone(self: CudaSlice(T)) CudaError.Error!CudaSlice(T)
+pub fn clone(self: @This()) CudaError.Error!@This()
 ```
 
 Performs a device-to-device memory copy using `cuMemcpyDtoD_v2`, allocating a new `CudaSlice(T)` of the same length on the same device. The original slice is not freed. The caller owns the returned slice and must call `free()` on it.
@@ -34,7 +39,7 @@ Performs a device-to-device memory copy using `cuMemcpyDtoD_v2`, allocating a ne
 ### `free`
 
 ```zig
-pub fn free(self: CudaSlice(T)) void
+pub fn free(self: @This()) void
 ```
 
 Frees the GPU memory held by this slice via `cuMemFree_v2`. Panics if the underlying CUDA call fails. Always call `free` (or pair it with `defer`) when you are done with a slice.

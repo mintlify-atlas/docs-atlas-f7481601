@@ -1,7 +1,7 @@
 ---
-title: "GPU Random Number Generation with cuRAND in cudaz"
+title: "GPU Random Number Generation with cuRAND and cudaz"
 sidebarTitle: "Random Numbers"
-description: "Generate arrays of uniform random float values directly on the GPU using cudaz's Rng type, backed by NVIDIA's cuRAND library."
+description: "Generate large arrays of uniform random float values on the GPU using cudaz's Rng type, backed by NVIDIA's cuRAND library, without CPU round-trips."
 ---
 
 cudaz wraps NVIDIA's cuRAND library through the `Rng` type, enabling you to generate large arrays of random numbers entirely on the GPU without round-tripping data through the CPU. The generator allocates device memory, fills it with uniform pseudo-random `f32` values, and returns a `CudaSlice(f32)` that you can pass directly to other GPU kernels or copy back to the host with `Device.syncReclaim`.
